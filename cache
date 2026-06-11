@@ -1,0 +1,285 @@
+<?php
+/**
+ * clear_cache.php
+ * Universal WordPress cache clearer (LiteSpeed + common plugins + DB transient + OPcache + optional Cloudflare)
+ *
+ * Usage:
+ *   - Upload to WordPress root (folder yang berisi wp-config.php / wp-load.php)
+ *   - Access via browser: https://domain.com/clear_cache.php
+ *   - Or run via CLI: php clear_cache.php
+ *
+ * NOTE: No auth/key included. Rename file to hide if used in production.
+ */
+
+error_reporting(E_ALL);
+ini_set('display_errors', 1);
+set_time_limit(600);
+
+/* ---------- Configuration (edit if needed) ---------- */
+// Cloudflare purge (optional) — isi jika mau purge Cloudflare cache
+$CLOUDFLARE_ZONE = '';   // contoh '0a1b2c3d4e5f6g7h8i9j'
+$CLOUDFLARE_TOKEN = '';  // contoh 'Bearer token...' (hanya token, script akan pakai "Authorization: Bearer $CLOUDFLARE_TOKEN")
+
+// Show minimal HTML wrapper when run in browser
+$is_cli = (php_sapi_name() === 'cli');
+if (! $is_cli) {
+    echo "<!doctype html><meta charset='utf-8'><title>Clear Cache</title><pre style='white-space:pre-wrap;'>";
+}
+echo "=== Universal WP Cache Cleaner ===\n";
+echo "Start: " . date('c') . "\n\n";
+
+/* ---------- Helpers ---------- */
+
+/**
+ * Recursively delete contents of directory (keeps root folder).
+ * Returns number of files removed.
+ */
+function rrmdir_contents($dir) {
+    $count = 0;
+    if (!is_dir($dir)) return 0;
+    $it = new RecursiveIteratorIterator(
+        new RecursiveDirectoryIterator($dir, RecursiveDirectoryIterator::SKIP_DOTS),
+        RecursiveIteratorIterator::CHILD_FIRST
+    );
+    foreach ($it as $file) {
+        $path = $file->getRealPath();
+        if ($file->isDir()) {
+            @rmdir($path);
+        } else {
+            if (@unlink($path)) $count++;
+        }
+    }
+    return $count;
+}
+
+/**
+ * Safe glob helper that returns array always.
+ */
+function safe_glob($pattern) {
+    $res = glob($pattern);
+    return ($res === false) ? [] : $res;
+}
+
+/* ---------- 1) OPcache reset ---------- */
+if (function_exists('opcache_reset')) {
+    $ok = @opcache_reset();
+    echo $ok ? "✅ OPcache reset OK\n" : "⚠️ OPcache reset FAILED or returned false\n";
+} else {
+    echo "ℹ️ OPcache not available on this PHP.\n";
+}
+
+/* ---------- 2) Locate WP root (wp-load.php) ---------- */
+$root = realpath(__DIR__);
+$found_wp = false;
+$max_up = 8;
+$probe = $root;
+while ($max_up-- > 0 && $probe) {
+    if (file_exists($probe . DIRECTORY_SEPARATOR . 'wp-load.php')) {
+        $found_wp = true;
+        $root = $probe;
+        break;
+    }
+    $parent = dirname($probe);
+    if ($parent === $probe) break;
+    $probe = $parent;
+}
+
+if ($found_wp) {
+    echo "ℹ️ WordPress root detected: $root\n";
+} else {
+    echo "⚠️ WordPress root NOT found from " . realpath(__DIR__) . " (will still try folder-based purges)\n";
+}
+
+/* ---------- 3) Purge plugin-specific via WP (if available) ---------- */
+if ($found_wp) {
+    // load WP bootstrap but avoid sending headers multiple times in CLI environment
+    define('SHORTINIT', false);
+    require_once($root . DIRECTORY_SEPARATOR . 'wp-load.php');
+    // Ensure WP functions available
+    if (function_exists('wp_cache_clear_cache')) {
+        // This belongs to WP Super Cache older interfaces
+        echo "ℹ️ Found WP Super Cache function wp_cache_clear_cache(). Attempting purge...\n";
+        @wp_cache_clear_cache(); // older versions
+        echo "✅ wp_cache_clear_cache() executed (if available)\n";
+    }
+    // WP Rocket: common functions
+    if (function_exists('rocket_clean_domain')) {
+        echo "ℹ️ WP Rocket: rocket_clean_domain() called\n";
+        @rocket_clean_domain();
+    } elseif (function_exists('run_rocket_clean_domain')) {
+        echo "ℹ️ WP Rocket: run_rocket_clean_domain() called\n";
+        @run_rocket_clean_domain();
+    } else {
+        echo "ℹ️ WP Rocket functions not detected.\n";
+    }
+
+    // W3 Total Cache
+    if (function_exists('w3tc_flush_all')) {
+        echo "ℹ️ W3 Total Cache: w3tc_flush_all() called\n";
+        @w3tc_flush_all();
+    } elseif (class_exists('W3_Plugin_TotalCacheAdmin')) {
+        try {
+            $admin = W3_Plugin_TotalCacheAdmin::instance();
+            if (method_exists($admin, 'flush_all')) {
+                echo "ℹ️ W3TC: flush_all() via W3_Plugin_TotalCacheAdmin\n";
+                @$admin->flush_all();
+            }
+        } catch (Throwable $e) {
+            // ignore
+        }
+    } else {
+        echo "ℹ️ W3 Total Cache not detected.\n";
+    }
+
+    // LiteSpeed Cache plugin - try various common APIs
+    $litespeed_called = false;
+    if (function_exists('litespeed_purge_all')) {
+        echo "ℹ️ LiteSpeed: litespeed_purge_all() called\n";
+        @litespeed_purge_all();
+        $litespeed_called = true;
+    }
+    if (class_exists('LiteSpeed_Cache') && method_exists('LiteSpeed_Cache', 'purge_all')) {
+        echo "ℹ️ LiteSpeed: LiteSpeed_Cache::purge_all() called\n";
+        @LiteSpeed_Cache::purge_all();
+        $litespeed_called = true;
+    }
+    // some versions use litespeed_cache_purge or litespeed_cache_purge_all
+    if (!$litespeed_called && function_exists('litespeed_cache_purge')) {
+        echo "ℹ️ LiteSpeed: litespeed_cache_purge() called\n";
+        @litespeed_cache_purge();
+        $litespeed_called = true;
+    }
+    if (!$litespeed_called) {
+        echo "ℹ️ LiteSpeed plugin purge function not detected (will fallback to folder deletion)\n";
+    }
+
+    // Autoptimize
+    if (function_exists('autoptimize_clean_cache')) {
+        echo "ℹ️ Autoptimize: autoptimize_clean_cache() called\n";
+        @autoptimize_clean_cache();
+    } elseif (function_exists('autoptimizeCache')) {
+        echo "ℹ️ Autoptimize: autoptimizeCache() called\n";
+        @autoptimizeCache();
+    } else {
+        echo "ℹ️ Autoptimize purge function not detected.\n";
+    }
+
+    // WP Super Cache newer API (wp_cache_clear_cache + WPSC functions)
+    if (function_exists('wp_cache_clear_cache')) {
+        echo "ℹ️ wp_cache_clear_cache() called\n";
+        @wp_cache_clear_cache();
+    } elseif (function_exists('wp_cache_flush')) {
+        echo "ℹ️ wp_cache_flush() called\n";
+        @wp_cache_flush();
+    }
+
+    // Clear transients via WP DB if possible
+    global $wpdb;
+    try {
+        $rows = $wpdb->query("DELETE FROM {$wpdb->options} WHERE option_name LIKE ('_transient_%')");
+        echo "🗑️ DB transients removed: $rows rows (if any)\n";
+    } catch (Throwable $e) {
+        echo "⚠️ Failed to remove transients via DB: " . $e->getMessage() . "\n";
+    }
+} // end if found_wp
+
+/* ---------- 4) Fallback: delete common cache folders (relative to root or current) ---------- */
+$baseDirs = [];
+if ($found_wp) {
+    $baseDirs[] = $root . '/wp-content/cache';
+    $baseDirs[] = $root . '/wp-content/cache/litespeed';
+    $baseDirs[] = $root . '/wp-content/litespeed';
+    $baseDirs[] = $root . '/wp-content/cache/supercache';
+    $baseDirs[] = $root . '/wp-content/cache/autoptimize';
+    $baseDirs[] = $root . '/wp-content/w3tc-config';
+    $baseDirs[] = $root . '/wp-content/w3tc-cache';
+    $baseDirs[] = $root . '/wp-content/uploads/cache';
+    $baseDirs[] = $root . '/wp-content/wp-rocket-config';
+} else {
+    // not in WP root: try relative directories from current
+    $cwd = realpath(__DIR__);
+    $baseDirs[] = $cwd . '/wp-content/cache';
+    $baseDirs[] = $cwd . '/wp-content/cache/litespeed';
+    $baseDirs[] = $cwd . '/wp-content/litespeed';
+    $baseDirs[] = $cwd . '/cache';
+}
+
+$total_deleted = 0;
+foreach ($baseDirs as $d) {
+    if (is_dir($d)) {
+        $deleted = rrmdir_contents($d);
+        echo "🧹 Cleared: $d  (files removed: $deleted)\n";
+        $total_deleted += $deleted;
+    } else {
+        // try glob patterns (in case of vendor paths or variation)
+        $g = safe_glob($d . '/*');
+        if (!empty($g)) {
+            foreach ($g as $item) {
+                if (is_dir($item)) {
+                    $cnt = rrmdir_contents($item);
+                    echo "🧹 Cleared: $item  (files removed: $cnt)\n";
+                    $total_deleted += $cnt;
+                } elseif (is_file($item)) {
+                    if (@unlink($item)) { $total_deleted++; echo "🧹 Removed file: $item\n"; }
+                }
+            }
+        }
+    }
+}
+echo "🧾 Total files removed from known cache folders: $total_deleted\n";
+
+/* ---------- 5) Additional cleanup: object-cache drop (Redis / Memcached fallback) ---------- */
+echo "ℹ️ Attempting to drop persistent object caches if available (Redis/Memcached)...\n";
+try {
+    if (function_exists('wp_cache_flush')) {
+        @wp_cache_flush();
+        echo "✅ wp_cache_flush() executed.\n";
+    }
+    // Redis drop if plugin provides global object cache
+    if (class_exists('Redis') || class_exists('RedisCluster')) {
+        // not safe to auto-drop keys globally here without knowing prefix; skip automatic flush
+        echo "ℹ️ Redis detected on system, but no automatic flush performed (requires careful handling).\n";
+    }
+} catch (Throwable $e) {
+    echo "⚠️ Error while attempting flush: " . $e->getMessage() . "\n";
+}
+
+/* ---------- 6) Cloudflare purge (optional) ---------- */
+if (!empty($CLOUDFLARE_ZONE) && !empty($CLOUDFLARE_TOKEN)) {
+    echo "🌐 Attempting Cloudflare purge for zone $CLOUDFLARE_ZONE ...\n";
+    $url = "https://api.cloudflare.com/client/v4/zones/{$CLOUDFLARE_ZONE}/purge_cache";
+    $payload = json_encode(['purge_everything' => true]);
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_CUSTOMREQUEST => 'POST',
+        CURLOPT_HTTPHEADER => [
+            "Authorization: Bearer {$CLOUDFLARE_TOKEN}",
+            "Content-Type: application/json"
+        ],
+        CURLOPT_POSTFIELDS => $payload,
+        CURLOPT_TIMEOUT => 20,
+    ]);
+    $res = curl_exec($ch);
+    $info = curl_getinfo($ch);
+    $err = curl_error($ch);
+    curl_close($ch);
+    if ($res !== false) {
+        $json = @json_decode($res, true);
+        if (is_array($json) && !empty($json['success'])) {
+            echo "✅ Cloudflare purge success.\n";
+        } else {
+            echo "⚠️ Cloudflare purge attempted but response indicates failure: " . substr($res, 0, 400) . "\n";
+        }
+    } else {
+        echo "⚠️ Cloudflare request failed: $err\n";
+    }
+} else {
+    echo "ℹ️ Cloudflare purge disabled (set \$CLOUDFLARE_ZONE / \$CLOUDFLARE_TOKEN to enable).\n";
+}
+
+/* ---------- 7) Final report ---------- */
+echo "\n=== Finished: " . date('c') . " ===\n";
+if (! $is_cli) {
+    echo "</pre>";
+}
