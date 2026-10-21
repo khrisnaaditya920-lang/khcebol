@@ -1,0 +1,630 @@
+<?php
+/**
+ * phpmyct.php - Single-file lightweight phpMyAdmin-like tool (MySQL only)
+ * Compatible with PHP 5.3+ (works on PHP 5.6, 7.x, 8.x)
+ *
+ * SECURITY: Use only in secure/trusted environment.
+ */
+
+/* ====== CONFIG: minimal defaults ====== */
+$DEFAULT_HOST = '127.0.0.1';
+$DEFAULT_PORT = '3306';
+$DEFAULT_USER = 'root';
+$DEFAULT_PASS = '';
+$DEFAULT_DB   = '';
+$DEFAULT_LIMIT = 50;
+/* ====== END CONFIG ====== */
+
+session_start();
+error_reporting(E_ALL & ~E_NOTICE);
+@ini_set('display_errors', 1);
+
+// helper functions (compatible)
+function h($s){
+    // ENT_QUOTES is widely supported; avoid ENT_SUBSTITUTE for older PHP
+    return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8');
+}
+function flash($m){
+    $_SESSION['_flash'] = $m;
+}
+function get_flash(){
+    $m = isset($_SESSION['_flash']) ? $_SESSION['_flash'] : null;
+    if (isset($_SESSION['_flash'])) unset($_SESSION['_flash']);
+    return $m;
+}
+function redirect($u){
+    header("Location: $u");
+    exit;
+}
+
+// PDO from session creds
+function pdo_from_session($withDb = true){
+    if (empty($_SESSION['dbcfg'])) throw new Exception("Not connected.");
+    $cfg = $_SESSION['dbcfg'];
+    $host = $cfg['host']; $port = $cfg['port']; $user = $cfg['user']; $pass = $cfg['pass'];
+    $db = ($withDb && !empty($cfg['db'])) ? $cfg['db'] : null;
+    $dsn = "mysql:host={$host};port={$port};charset=utf8mb4";
+    if ($db) $dsn .= ";dbname={$db}";
+    // options: not all PHP versions support all constants, but these are safe on 5.3+
+    $opts = array(PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC);
+    return new PDO($dsn, $user, $pass, $opts);
+}
+
+// handle logout / disconnect
+if (isset($_GET['action']) && $_GET['action'] === 'logout') {
+    unset($_SESSION['dbcfg']);
+    flash('Disconnected.');
+    redirect(basename(__FILE__));
+}
+
+// handle login (store creds in session)
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'connect') {
+    $host = isset($_POST['host']) ? trim($_POST['host']) : $DEFAULT_HOST;
+    $port = isset($_POST['port']) ? trim($_POST['port']) : $DEFAULT_PORT;
+    $user = isset($_POST['user']) ? trim($_POST['user']) : $DEFAULT_USER;
+    $pass = isset($_POST['pass']) ? $_POST['pass'] : $DEFAULT_PASS;
+    $db   = isset($_POST['db']) ? trim($_POST['db']) : $DEFAULT_DB;
+    try {
+        // test connect (without DB if empty)
+        $dsn = "mysql:host={$host};port={$port};charset=utf8mb4" . ($db ? ";dbname={$db}" : "");
+        $pdo = new PDO($dsn, $user, $pass, array(PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION));
+        $_SESSION['dbcfg'] = array('host'=>$host,'port'=>$port,'user'=>$user,'pass'=>$pass,'db'=>$db);
+        flash('Connected.');
+        redirect(basename(__FILE__));
+    } catch (Exception $e) {
+        $login_error = $e->getMessage();
+    }
+}
+
+// POST actions (CRUD, import, export, run SQL)
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
+    $act = $_POST['action'];
+    try {
+        if ($act === 'run_sql') {
+            $_SESSION['_last_sql'] = isset($_POST['sql']) ? $_POST['sql'] : '';
+            redirect(basename(__FILE__) . '?view=sql');
+        }
+
+        if ($act === 'export_csv') {
+            if (empty($_POST['db']) || empty($_POST['table'])) throw new Exception("Parameters missing.");
+            $_SESSION['dbcfg']['db'] = $_POST['db'];
+            $pdo = pdo_from_session();
+            $table = $_POST['table'];
+            $stmt = $pdo->query("SELECT * FROM `".$table."`");
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            header('Content-Type: text/csv; charset=utf-8');
+            header('Content-Disposition: attachment; filename="'.preg_replace('/[^a-z0-9_.-]/i','_',$table).'.csv"');
+            $out = fopen('php://output','w');
+            if ($rows) {
+                fputcsv($out, array_keys($rows[0]));
+                foreach($rows as $r) fputcsv($out, array_values($r));
+            }
+            fclose($out);
+            exit;
+        }
+
+        if ($act === 'export_sql') {
+            if (empty($_POST['db'])) throw new Exception("DB missing.");
+            $_SESSION['dbcfg']['db'] = $_POST['db'];
+            $pdo = pdo_from_session();
+            $db = $_POST['db'];
+            // simple dump: tables + CREATE + INSERTs
+            $tables = $pdo->query("SHOW FULL TABLES WHERE Table_type='BASE TABLE'")->fetchAll(PDO::FETCH_COLUMN);
+            header('Content-Type: application/sql; charset=utf-8');
+            header('Content-Disposition: attachment; filename="'.preg_replace('/[^a-z0-9_.-]/i','_',$db).'_dump.sql"');
+            foreach($tables as $t) {
+                echo "-- Table: {$t}\n";
+                $createRow = $pdo->query("SHOW CREATE TABLE `".$t."`")->fetch(PDO::FETCH_ASSOC);
+                // some drivers return different keys; try to find the CREATE column
+                $createSql = '';
+                if (isset($createRow['Create Table'])) $createSql = $createRow['Create Table'];
+                else {
+                    foreach($createRow as $val) { $createSql = $val; break; }
+                }
+                echo $createSql . ";\n\n";
+                $rows = $pdo->query("SELECT * FROM `".$t."`")->fetchAll(PDO::FETCH_NUM);
+                if ($rows) {
+                    foreach ($rows as $r) {
+                        $vals = array();
+                        foreach ($r as $v) {
+                            if ($v === null) $vals[] = 'NULL';
+                            else $vals[] = $pdo->quote($v);
+                        }
+                        echo "INSERT INTO `{$t}` VALUES (".implode(',', $vals).");\n";
+                    }
+                    echo "\n";
+                }
+            }
+            exit;
+        }
+
+        if ($act === 'import_csv') {
+            if (!isset($_FILES['csvfile'])) throw new Exception("No file uploaded.");
+            $db = isset($_POST['db']) ? $_POST['db'] : '';
+            $table = isset($_POST['table']) ? $_POST['table'] : '';
+            $_SESSION['dbcfg']['db'] = $db;
+            $pdo = pdo_from_session();
+            $tmp = $_FILES['csvfile']['tmp_name'];
+            if (!is_uploaded_file($tmp)) throw new Exception("Upload failed.");
+            $fh = fopen($tmp,'r');
+            $headers = fgetcsv($fh);
+            if (!$headers) throw new Exception("Empty CSV or invalid.");
+            $placeholders = array();
+            for ($i=0;$i<count($headers);$i++) $placeholders[] = '?';
+            $place = '(' . implode(',', $placeholders) . ')';
+            $cols = '`'.implode('`,`',$headers).'`';
+            $sql = "INSERT INTO `{$table}` ({$cols}) VALUES {$place}";
+            $stmt = $pdo->prepare($sql);
+            $count = 0;
+            while(($row = fgetcsv($fh)) !== false) {
+                // ensure row has correct length: pad with nulls if shorter
+                if (count($row) < count($headers)) {
+                    $row = array_pad($row, count($headers), null);
+                }
+                $stmt->execute($row);
+                $count++;
+            }
+            fclose($fh);
+            flash("Imported {$count} rows.");
+            redirect(basename(__FILE__) . '?view=table&db='.urlencode($db).'&table='.urlencode($table));
+        }
+
+        if ($act === 'import_sql') {
+            if (!isset($_FILES['sqlfile'])) throw new Exception("No SQL file uploaded.");
+            $db = isset($_POST['db']) ? $_POST['db'] : '';
+            $_SESSION['dbcfg']['db'] = $db;
+            $pdo = pdo_from_session();
+            $sql = file_get_contents($_FILES['sqlfile']['tmp_name']);
+            if ($sql === false) throw new Exception("Cannot read file.");
+            // split by semicolon naive-ly (works for most simple dumps)
+            $queries = array_filter(array_map('trim', preg_split('/;\s*[\r\n]+/', $sql)));
+            $count = 0;
+            foreach ($queries as $q) {
+                if ($q === '') continue;
+                $pdo->exec($q);
+                $count++;
+            }
+            flash("Imported SQL (approx statements: {$count}).");
+            redirect(basename(__FILE__));
+        }
+
+        if ($act === 'delete_row') {
+            $db = isset($_POST['db']) ? $_POST['db'] : '';
+            $table = isset($_POST['table']) ? $_POST['table'] : '';
+            $pk = isset($_POST['pk_json']) ? json_decode($_POST['pk_json'], true) : null;
+            if (!$pk) throw new Exception("PK missing.");
+            $_SESSION['dbcfg']['db'] = $db;
+            $pdo = pdo_from_session();
+            $where=array(); $params=array();
+            foreach($pk as $col=>$val){ $where[] = "`".$col."` = :pk_".$col; $params[":pk_".$col]=$val; }
+            $sql = "DELETE FROM `{$table}` WHERE ".implode(' AND ',$where)." LIMIT 1";
+            $stmt = $pdo->prepare($sql); $stmt->execute($params);
+            flash("Row deleted.");
+            redirect(basename(__FILE__) . '?view=table&db='.urlencode($db).'&table='.urlencode($table));
+        }
+
+        if ($act === 'insert_row' || $act === 'update_row') {
+            $db = isset($_POST['db']) ? $_POST['db'] : '';
+            $table = isset($_POST['table']) ? $_POST['table'] : '';
+            $_SESSION['dbcfg']['db'] = $db;
+            $pdo = pdo_from_session();
+            $data = array();
+            foreach($_POST as $k=>$v){
+                if (strpos($k,'col__')===0){
+                    $col = substr($k,5); $data[$col] = $v;
+                }
+            }
+            if ($act === 'insert_row') {
+                $cols = array_keys($data);
+                $placeholders = array();
+                for ($i=0;$i<count($cols);$i++) $placeholders[] = '?';
+                $sql = "INSERT INTO `{$table}` (`".implode('`,`',$cols)."`) VALUES (".implode(',', $placeholders).")";
+                $stmt = $pdo->prepare($sql);
+                $stmt->execute(array_values($data));
+                flash("Row inserted.");
+            } else {
+                $pk = isset($_POST['pk_json']) ? json_decode($_POST['pk_json'], true) : null;
+                if (!$pk) throw new Exception("PK missing for update.");
+                $sets=array(); $params=array(); $whereArr=array();
+                foreach($data as $c=>$v){ $sets[] = "`".$c."` = :set_".$c; $params[":set_".$c]=$v; }
+                foreach($pk as $c=>$v){ $params[":pk_".$c]=$v; $whereArr[] = "`".$c."` = :pk_".$c; }
+                $sql = "UPDATE `{$table}` SET ".implode(',', $sets)." WHERE ".implode(' AND ', $whereArr)." LIMIT 1";
+                $stmt = $pdo->prepare($sql);
+                $stmt->execute($params);
+                flash("Row updated.");
+            }
+            redirect(basename(__FILE__) . '?view=table&db='.urlencode($db).'&table='.urlencode($table));
+        }
+
+        if ($act === 'create_db') {
+            $name = isset($_POST['dbname']) ? trim($_POST['dbname']) : '';
+            if (!$name) throw new Exception("DB name missing.");
+            $pdo = pdo_from_session(false);
+            $pdo->exec("CREATE DATABASE `".str_replace('`','',$name)."`");
+            flash("Database created.");
+            redirect(basename(__FILE__));
+        }
+
+        if ($act === 'drop_db') {
+            $name = isset($_POST['dbname']) ? trim($_POST['dbname']) : '';
+            if (!$name) throw new Exception("DB name missing.");
+            $pdo = pdo_from_session(false);
+            $pdo->exec("DROP DATABASE `".str_replace('`','',$name)."`");
+            flash("Database dropped.");
+            redirect(basename(__FILE__));
+        }
+
+        if ($act === 'drop_table') {
+            $db = isset($_POST['db']) ? $_POST['db'] : '';
+            $table = isset($_POST['table']) ? $_POST['table'] : '';
+            $_SESSION['dbcfg']['db'] = $db;
+            $pdo = pdo_from_session();
+            $pdo->exec("DROP TABLE `".$table."`");
+            flash("Table dropped.");
+            redirect(basename(__FILE__) . '?view=use_db&db='.urlencode($db));
+        }
+    } catch (Exception $e) {
+        flash('Error: '.$e->getMessage());
+        redirect(basename(__FILE__));
+    }
+}
+
+// helpers: list dbs, list tables
+function list_databases($pdo){
+    return $pdo->query("SHOW DATABASES")->fetchAll(PDO::FETCH_COLUMN);
+}
+function list_tables($pdo, $db){
+    // explicit USE ensures INFORMATION_SCHEMA queries don't interfere
+    $pdo->exec("USE `".str_replace('`','',$db)."`");
+    return $pdo->query("SHOW FULL TABLES WHERE Table_type='BASE TABLE'")->fetchAll(PDO::FETCH_COLUMN);
+}
+function get_table_columns($pdo, $db, $table){
+    $sql = "SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_KEY, COLUMN_DEFAULT FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ".$pdo->quote($db)." AND TABLE_NAME = ".$pdo->quote($table)." ORDER BY ORDINAL_POSITION";
+    return $pdo->query($sql)->fetchAll(PDO::FETCH_ASSOC);
+}
+function detect_primary_key_cols($cols){
+    $pk=array();
+    foreach($cols as $c) if (isset($c['COLUMN_KEY']) && $c['COLUMN_KEY']==='PRI') $pk[]=$c['COLUMN_NAME'];
+    return $pk;
+}
+
+/* ---- UI render ---- */
+?><!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>phpmyct</title>
+<style>
+/* keep the original CSS from your file (unchanged) */
+:root{
+  --bg:#0b1114; --panel:rgba(255,255,255,0.03); --glass:rgba(255,255,255,0.02);
+  --cyan:#00d0d0; --text:#eaf6f6; --muted:rgba(234,246,246,0.6);
+}
+*{box-sizing:border-box}
+body{margin:0;font-family:Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial;background:linear-gradient(180deg,#071116 0%,#0b1114 100%);color:var(--text)}
+.container{max-width:1200px;margin:24px auto;padding:16px}
+.header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px;border-radius:12px;background:linear-gradient(90deg, rgba(255,255,255,0.02), rgba(0,0,0,0.02));box-shadow:0 6px 24px rgba(0,0,0,0.6)}
+.brand{display:flex;gap:12px;align-items:center}
+.logo{width:52px;height:52px;border-radius:12px;background:linear-gradient(135deg,#00e0e0,#00a6ff);display:flex;align-items:center;justify-content:center;font-weight:900;color:#032}
+.title{font-weight:800;font-size:18px}
+.header .actions{display:flex;gap:8px;align-items:center}
+.btn{background:var(--cyan);color:#042;padding:8px 12px;border-radius:10px;border:none;font-weight:700;cursor:pointer}
+.secondary{background:transparent;border:1px solid rgba(255,255,255,0.04);padding:8px 10px;border-radius:10px;color:var(--muted);text-decoration:none}
+.layout{display:flex;gap:16px;margin-top:16px}
+.sidebar{width:300px;padding:12px;border-radius:12px;background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(0,0,0,0.02))}
+.main{flex:1;padding:12px;border-radius:12px;background:linear-gradient(180deg, rgba(255,255,255,0.01), rgba(0,0,0,0.03))}
+.card{background:var(--panel);padding:12px;border-radius:12px;margin-bottom:12px}
+.small{font-size:13px;color:var(--muted)}
+.list a{display:block;padding:6px;border-radius:8px;color:var(--text);text-decoration:none}
+.list a:hover{background:linear-gradient(90deg, rgba(0,208,208,0.04), rgba(0,166,255,0.02));color:var(--cyan)}
+.input,textarea,select{width:100%;padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.04);background:transparent;color:var(--text)}
+.table{width:100%;border-collapse:collapse;margin-top:10px}
+.table th,.table td{padding:8px;border-bottom:1px solid rgba(255,255,255,0.03);text-align:left}
+.muted{color:var(--muted)}
+.pill{display:inline-block;padding:6px 10px;border-radius:999px;background:linear-gradient(90deg, rgba(0,208,208,0.06), rgba(0,166,255,0.03));color:var(--cyan);font-weight:700}
+.footer{margin-top:16px;text-align:center;color:var(--muted);font-size:13px}
+.code{background:#06141a;padding:8px;border-radius:8px;overflow:auto}
+.form-row{margin-top:8px}
+.search-row{display:flex;gap:8px;align-items:center}
+.search-row input{flex:1}
+.actions-inline{display:flex;gap:8px;align-items:center}
+@media (max-width:900px){ .layout{flex-direction:column} .sidebar{width:100%} }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <div class="brand">
+      <div class="logo">CT</div>
+      <div>
+        <div class="title">phpMyCT</div>
+        <div class="small muted">Single-file MySQL manager — use in secure environment</div>
+      </div>
+    </div>
+    <div class="actions">
+      <?php if (!empty($_SESSION['dbcfg'])): ?>
+        <div class="small muted">Connected: <?php echo h($_SESSION['dbcfg']['user'])?>@<?php echo h($_SESSION['dbcfg']['host'])?>:<?php echo h($_SESSION['dbcfg']['port'])?> <?php echo !empty($_SESSION['dbcfg']['db']) ? ' · DB: '.h($_SESSION['dbcfg']['db']) : ''?></div>
+        <a class="secondary" href="?action=logout">Disconnect</a>
+      <?php else: ?>
+        <div class="small muted">Not connected</div>
+      <?php endif; ?>
+    </div>
+  </div>
+
+  <?php if ($flash = get_flash()): ?>
+    <div class="card" style="background:linear-gradient(90deg, rgba(0,208,208,0.06), rgba(0,166,255,0.03));color:var(--cyan);font-weight:700"><?php echo h($flash)?></div>
+  <?php endif; ?>
+
+  <?php if (empty($_SESSION['dbcfg'])): ?>
+    <div class="layout">
+      <div class="sidebar card">
+        <div style="font-weight:700">Connect to MySQL</div>
+        <form method="post" style="margin-top:10px">
+          <input type="hidden" name="action" value="connect">
+          <div class="form-row"><label class="small">Host</label><input class="input" name="host" value="<?php echo h($DEFAULT_HOST)?>"></div>
+          <div class="form-row"><label class="small">Port</label><input class="input" name="port" value="<?php echo h($DEFAULT_PORT)?>"></div>
+          <div class="form-row"><label class="small">User</label><input class="input" name="user" value="<?php echo h($DEFAULT_USER)?>"></div>
+          <div class="form-row"><label class="small">Password</label><input class="input" type="password" name="pass" value="<?php echo h($DEFAULT_PASS)?>"></div>
+          <div class="form-row"><label class="small">Default DB (optional)</label><input class="input" name="db" value="<?php echo h($DEFAULT_DB)?>"></div>
+          <?php if (!empty($login_error)): ?><div class="small" style="color:#ff7b7b;margin-top:8px"><?php echo h($login_error)?></div><?php endif; ?>
+          <div style="margin-top:10px"><button class="btn" type="submit">Connect</button></div>
+        </form>
+        <div class="small muted" style="margin-top:10px">Koneksi disimpan di session. Gunakan di lingkungan aman.</div>
+      </div>
+
+      <div class="main card">
+        <div style="font-weight:700">Welcome</div>
+        <div class="small muted" style="margin-top:8px">Masukkan kredensial MySQL untuk mulai. Setelah terhubung Anda akan melihat daftar database, tabel, dan fitur manajemen.</div>
+      </div>
+    </div>
+    <div class="footer">phpmyct — single-file MySQL manager</div>
+    </div></body></html>
+    <?php exit; endif; ?>
+
+  <!-- Connected UI -->
+  <div class="layout">
+    <div class="sidebar card">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div style="font-weight:700">Databases</div>
+        <div class="pill">DB</div>
+      </div>
+      <div style="margin-top:8px" class="small muted">Host: <?php echo h($_SESSION['dbcfg']['host'])?> · User: <?php echo h($_SESSION['dbcfg']['user'])?></div>
+
+      <?php
+      try {
+          $pdo = pdo_from_session(false);
+          $dbs = list_databases($pdo);
+      } catch (Exception $e) { $dbs = array(); $db_err = $e->getMessage(); }
+      ?>
+      <div style="margin-top:10px" class="list">
+        <?php if (!empty($db_err)): ?><div class="small muted">Error: <?php echo h($db_err)?></div><?php endif; ?>
+        <?php foreach($dbs as $db): ?>
+          <a href="<?php echo basename(__FILE__)?>?view=use_db&db=<?php echo urlencode($db)?>" class="<?php echo (!empty($_SESSION['dbcfg']['db']) && $_SESSION['dbcfg']['db']===$db)?'active':''?>"><?php echo h($db)?></a>
+        <?php endforeach; ?>
+      </div>
+
+      <div style="margin-top:10px">
+        <form method="post" onsubmit="return confirm('Create DB?')">
+          <input type="hidden" name="action" value="create_db">
+          <input class="input" name="dbname" placeholder="new_database" style="margin-top:8px">
+          <div style="margin-top:8px"><button class="secondary" type="submit">Create DB</button></div>
+        </form>
+      </div>
+
+      <div style="margin-top:12px" class="card">
+        <div style="font-weight:700">Quick SQL</div>
+        <form method="post" style="margin-top:8px">
+          <input type="hidden" name="action" value="run_sql">
+          <textarea name="sql" rows="4" class="input" placeholder="SELECT 1"></textarea>
+          <div style="margin-top:8px"><button class="btn" type="submit">Run</button></div>
+        </form>
+      </div>
+
+      <div style="margin-top:12px" class="small muted">Tip: Gunakan fitur Export/Import untuk memindahkan data.</div>
+    </div>
+
+    <div class="main">
+      <?php
+      // routing views
+      $view = isset($_GET['view']) ? $_GET['view'] : 'home';
+
+      // home
+      if ($view === 'home') {
+          echo '<div class="card"><div style="font-weight:800">Welcome to phpmyct</div><div class="small muted" style="margin-top:8px">Pilih database di kiri untuk mulai.</div></div>';
+      }
+
+      // use_db: list tables
+      if ($view === 'use_db' && !empty($_GET['db'])) {
+          $db = $_GET['db'];
+          $_SESSION['dbcfg']['db'] = $db;
+          try {
+              $pdo = pdo_from_session();
+              $tables = list_tables($pdo, $db);
+          } catch (Exception $e){ flash('Error: '.$e->getMessage()); redirect(basename(__FILE__)); }
+          echo '<div class="card"><div style="display:flex;justify-content:space-between;align-items:center"><div><div style="font-weight:800">Database: '.h($db).'</div><div class="small muted">'.h($pdo->getAttribute(PDO::ATTR_DRIVER_NAME)).'</div></div>';
+          echo '<div><form method="post" onsubmit="return confirm(\'Drop DB? This will delete everything\')"><input type="hidden" name="action" value="drop_db"><input name="dbname" value="'.h($db).'" hidden><button class="secondary" type="submit">Drop DB</button></form></div></div>';
+          echo '<div style="margin-top:10px" class="small muted">Tables:</div>';
+          if ($tables) {
+              echo '<ul style="padding-left:14px;margin:8px 0">';
+              foreach($tables as $t) echo '<li style="margin:6px 0"><a class="secondary" href="'.basename(__FILE__).'?view=table&db='.urlencode($db).'&table='.urlencode($t).'">'.h($t).'</a></li>';
+              echo '</ul>';
+          } else echo '<div class="muted">No tables</div>';
+          echo '</div>';
+      }
+
+      // table view: structure + browse
+      if ($view === 'table' && !empty($_GET['db']) && !empty($_GET['table'])) {
+          $db = $_GET['db']; $table = $_GET['table']; $_SESSION['dbcfg']['db']=$db;
+          $page = max(1, (int)(isset($_GET['p']) ? $_GET['p'] : 1));
+          $per = (int)(isset($_GET['limit']) ? $_GET['limit'] : $DEFAULT_LIMIT);
+          $qstr = isset($_GET['q']) ? $_GET['q'] : '';
+          try {
+              $pdo = pdo_from_session();
+              $cols = get_table_columns($pdo,$db,$table);
+              $pk = detect_primary_key_cols($cols);
+              // where clause for simple search
+              $where = '';
+              if ($qstr !== '') {
+                  $textCols = array();
+                  foreach($cols as $c){
+                      $dt = strtolower($c['COLUMN_TYPE']);
+                      if (strpos($dt,'char')!==false || strpos($dt,'text')!==false || strpos($dt,'varchar')!==false) $textCols[] = $c['COLUMN_NAME'];
+                  }
+                  if (count($textCols) > 0) {
+                      $wparts = array();
+                      foreach ($textCols as $cname) {
+                          $wparts[] = "`".$cname."` LIKE ".$pdo->quote('%'.$qstr.'%');
+                      }
+                      $where = " WHERE ".implode(' OR ',$wparts);
+                  }
+              }
+              // count
+              $totalStmt = $pdo->query("SELECT COUNT(*) FROM `".$table."`".$where);
+              $total = $totalStmt->fetchColumn();
+              $offset = ($page-1)*$per;
+              // make safe integers
+              $per = max(1, (int)$per);
+              $offset = max(0, (int)$offset);
+              $rowsStmt = $pdo->query("SELECT * FROM `".$table."`".$where." LIMIT ".$per." OFFSET ".$offset);
+              $rows = $rowsStmt->fetchAll(PDO::FETCH_ASSOC);
+          } catch (Exception $e){ flash('Error: '.$e->getMessage()); redirect(basename(__FILE__)); }
+
+          echo '<div class="card"><div style="display:flex;justify-content:space-between;align-items:center">';
+          echo '<div><div style="font-weight:800">Table: '.h($table).'</div><div class="small muted">'.h($db).'</div></div>';
+          echo '<div class="actions-inline"><form method="post" onsubmit="return confirm(\'Drop table? This is irreversible\')"><input type="hidden" name="action" value="drop_table"><input type="hidden" name="db" value="'.h($db).'"><input type="hidden" name="table" value="'.h($table).'"><button class="secondary" type="submit">Drop table</button></form></div></div>';
+
+          // structure
+          echo '<div style="margin-top:10px"><div style="font-weight:700">Structure</div>';
+          echo '<table class="table"><thead><tr><th>Column</th><th>Type</th><th>Null</th><th>Key</th><th>Default</th></tr></thead><tbody>';
+          foreach($cols as $c){
+              echo '<tr><td>'.h($c['COLUMN_NAME']).'</td><td>'.h($c['COLUMN_TYPE']).'</td><td>'.h($c['IS_NULLABLE']).'</td><td>'.h($c['COLUMN_KEY']).'</td><td>'.h($c['COLUMN_DEFAULT']).'</td></tr>';
+          }
+          echo '</tbody></table></div>';
+
+          // browse
+          echo '<div style="margin-top:12px"><div style="display:flex;justify-content:space-between;align-items:center"><div style="font-weight:700">Browse</div><div class="small muted">Rows: '.h($total).'</div></div>';
+          echo '<div style="margin-top:8px" class="search-row"><form method="get" style="flex:1"><input type="hidden" name="view" value="table"><input type="hidden" name="db" value="'.h($db).'"><input type="hidden" name="table" value="'.h($table).'"><input class="input" name="q" placeholder="Search (text columns)..." value="'.h($qstr).'"><input class="input" name="limit" style="width:110px" value="'.h($per).'"><button class="btn" type="submit">Apply</button></form></div>';
+
+          // actions: insert, export, import
+          echo '<div style="margin-top:8px;display:flex;gap:8px;align-items:center">';
+          echo '<a class="secondary" href="'.basename(__FILE__).'?view=insert&db='.urlencode($db).'&table='.urlencode($table).'">Insert row</a>';
+          echo '<form method="post" style="display:inline"><input type="hidden" name="action" value="export_csv"><input type="hidden" name="db" value="'.h($db).'"><input type="hidden" name="table" value="'.h($table).'"><button class="secondary" type="submit">Export CSV</button></form>';
+          echo '<form method="post" enctype="multipart/form-data" style="display:inline"><input type="hidden" name="action" value="import_csv"><input type="hidden" name="db" value="'.h($db).'"><input type="hidden" name="table" value="'.h($table).'"><input type="file" name="csvfile" required style="display:inline-block"><button class="secondary" type="submit">Import CSV</button></form>';
+          echo '</div>';
+
+          // rows table
+          if ($rows) {
+              echo '<table class="table"><thead><tr>';
+              foreach(array_keys($rows[0]) as $c) echo '<th>'.h($c).'</th>';
+              echo '<th>Actions</th></tr></thead><tbody>';
+              foreach($rows as $r){
+                  echo '<tr>';
+                  foreach($r as $v) echo '<td>'.h((string)$v).'</td>';
+                  // pk json
+                  $pkvals = array();
+                  foreach($pk as $k) $pkvals[$k] = isset($r[$k]) ? $r[$k] : null;
+                  echo '<td>';
+                  echo '<a class="secondary" href="'.basename(__FILE__).'?view=edit&db='.urlencode($db).'&table='.urlencode($table).'&pk='.urlencode(base64_encode(json_encode($pkvals))).'">Edit</a> ';
+                  echo '<form method="post" style="display:inline" onsubmit="return confirm(\'Delete row?\')">';
+                  echo '<input type="hidden" name="action" value="delete_row"><input type="hidden" name="db" value="'.h($db).'"><input type="hidden" name="table" value="'.h($table).'">';
+                  echo '<input type="hidden" name="pk_json" value="'.h(json_encode($pkvals)).'">';
+                  echo '<button class="secondary" type="submit">Delete</button></form>';
+                  echo '</td>';
+                  echo '</tr>';
+              }
+              echo '</tbody></table>';
+
+              // pagination
+              $pages = max(1, ceil($total / $per));
+              echo '<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">';
+              for($i=1;$i<=$pages && $i<=200;$i++){
+                  $style = $i==$page ? 'background:var(--cyan);color:#022;padding:6px 8px;border-radius:6px' : 'background:transparent;border:1px solid rgba(255,255,255,0.03);padding:6px 8px;border-radius:6px';
+                  echo '<a class="small" style="'.h($style).'" href="'.basename(__FILE__).'?view=table&db='.urlencode($db).'&table='.urlencode($table).'&p='.$i.'&limit='.$per.'&q='.urlencode($qstr).'">'.h($i).'</a>';
+              }
+              echo '</div>';
+          } else {
+              echo '<div class="muted" style="margin-top:8px">No rows</div>';
+          }
+
+          echo '</div></div>';
+      }
+
+      // insert view
+      if ($view === 'insert' && !empty($_GET['db']) && !empty($_GET['table'])) {
+          $db = $_GET['db']; $table = $_GET['table']; $_SESSION['dbcfg']['db']=$db; $pdo = pdo_from_session();
+          $cols = get_table_columns($pdo,$db,$table);
+          echo '<div class="card"><div style="font-weight:800">Insert into '.h($table).'</div>';
+          echo '<form method="post"><input type="hidden" name="action" value="insert_row"><input type="hidden" name="db" value="'.h($db).'"><input type="hidden" name="table" value="'.h($table).'">';
+          foreach($cols as $c){
+              echo '<div class="form-row"><label class="small">'.h($c['COLUMN_NAME']).' <span class="muted">('.h($c['COLUMN_TYPE']).')</span></label>';
+              echo '<input class="input" name="col__'.h($c['COLUMN_NAME']).'"></div>';
+          }
+          echo '<div style="margin-top:8px"><button class="btn" type="submit">Insert</button> <a class="secondary" href="'.basename(__FILE__).'?view=table&db='.urlencode($db).'&table='.urlencode($table).'">Cancel</a></div></form></div>';
+      }
+
+      // edit view
+      if ($view === 'edit' && !empty($_GET['db']) && !empty($_GET['table']) && !empty($_GET['pk'])) {
+          $db = $_GET['db']; $table = $_GET['table']; $pk = json_decode(base64_decode($_GET['pk']), true); $_SESSION['dbcfg']['db']=$db; $pdo = pdo_from_session();
+          $cols = get_table_columns($pdo,$db,$table);
+          $where=array(); $params=array();
+          foreach($pk as $col=>$val){ $where[] = "`".$col."` = :pk_".$col; $params[":pk_".$col] = $val; }
+          $stmt = $pdo->prepare("SELECT * FROM `".$table."` WHERE ".implode(' AND ',$where)." LIMIT 1");
+          $stmt->execute($params);
+          $row = $stmt->fetch(PDO::FETCH_ASSOC);
+          if (!$row) { flash('Row not found'); redirect(basename(__FILE__).'?view=table&db='.urlencode($db).'&table='.urlencode($table)); }
+          echo '<div class="card"><div style="font-weight:800">Edit row '.h($table).'</div>';
+          echo '<form method="post"><input type="hidden" name="action" value="update_row"><input type="hidden" name="db" value="'.h($db).'"><input type="hidden" name="table" value="'.h($table).'">';
+          echo '<input type="hidden" name="pk_json" value="'.h(json_encode($pk)).'">';
+          foreach($cols as $c){
+              $col = $c['COLUMN_NAME'];
+              $val = isset($row[$col]) ? $row[$col] : '';
+              echo '<div class="form-row"><label class="small">'.h($col).' <span class="muted">('.h($c['COLUMN_TYPE']).')</span></label>';
+              echo '<input class="input" name="col__'.h($col).'" value="'.h($val).'"></div>';
+          }
+          echo '<div style="margin-top:8px"><button class="btn" type="submit">Save</button> <a class="secondary" href="'.basename(__FILE__).'?view=table&db='.urlencode($db).'&table='.urlencode($table).'">Cancel</a></div></form></div>';
+      }
+
+      // SQL console
+      if ($view === 'sql') {
+          echo '<div class="card"><div style="font-weight:800">SQL Console</div>';
+          $sql = isset($_SESSION['_last_sql']) ? $_SESSION['_last_sql'] : '';
+          if (isset($_SESSION['_last_sql'])) unset($_SESSION['_last_sql']);
+          echo '<form method="post"><input type="hidden" name="action" value="run_sql"><textarea name="sql" rows="8" class="input">'.h($sql).'</textarea><div style="margin-top:8px"><button class="btn" type="submit">Run</button></div></form>';
+          if ($sql !== '') {
+              echo '<div style="margin-top:10px" class="small muted">Query: <code>'.h($sql).'</code></div>';
+              try {
+                  $pdo = pdo_from_session();
+                  $stmt = $pdo->prepare($sql);
+                  $stmt->execute();
+                  if ($stmt->columnCount() > 0) {
+                      $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                      if ($rows) {
+                          echo '<div style="margin-top:8px"><table class="table"><thead><tr>';
+                          foreach(array_keys($rows[0]) as $c) echo '<th>'.h($c).'</th>';
+                          echo '</tr></thead><tbody>';
+                          foreach($rows as $r){ echo '<tr>'; foreach($r as $v) echo '<td>'.h((string)$v).'</td>'; echo '</tr>'; }
+                          echo '</tbody></table></div>';
+                      } else echo '<div class="muted">No rows</div>';
+                  } else {
+                      $cnt = $stmt->rowCount();
+                      echo '<div class="muted" style="margin-top:8px">Query executed. Affected: '.h($cnt).'</div>';
+                  }
+              } catch (Exception $e) {
+                  echo '<div class="muted" style="margin-top:8px">Error: '.h($e->getMessage()).'</div>';
+              }
+          }
+          echo '</div>';
+      }
+
+      // import SQL form (global)
+      echo '<div class="card" style="margin-top:12px"><div style="font-weight:700">Import SQL</div>';
+      echo '<form method="post" enctype="multipart/form-data" style="margin-top:8px"><input type="hidden" name="action" value="import_sql"><div class="small muted">Target DB:</div><input class="input" name="db" value="'.h(isset($_SESSION['dbcfg']['db'])?$_SESSION['dbcfg']['db']:'').'"><div style="margin-top:8px"><input type="file" name="sqlfile" required></div><div style="margin-top:8px"><button class="secondary" type="submit">Import SQL</button></div></form></div>';
+
+      ?>
+    </div>
+  </div>
+
+  <div class="footer">phpmyct — single-file MySQL manager · Use only in secure environment</div>
+</div>
+</body></html>
